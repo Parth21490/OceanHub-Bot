@@ -1,0 +1,16 @@
+ccxt==4.5.65
+websockets==15.0.1
+python-dotenv==1.2.2
+pandas==3.0.3
+pandas-ta==0.4.71b0
+numpy==2.2.6
+scikit-learn==1.9.0
+scipy==1.18.0
+shap==0.52.0
+joblib==1.5.3
+ta==0.11.0
+requests==2.34.2
+aiohttp==3.14.1
+python-dateutil==2.9.0.post0
+pytz==2026.2
+threadpoolctl==3.6.0

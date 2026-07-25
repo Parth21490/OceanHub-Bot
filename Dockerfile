@@ -1,14 +1,17 @@
-# ─── OceanHub Root Dockerfile for Railway ───────────────────────────────────
+# ─── OceanHub Railway Production Dockerfile ──────────────────────────────────
 FROM python:3.12-slim
 
 WORKDIR /app
 
+# Copy backend requirements using root context
 COPY backend/requirements.txt /app/requirements.txt
 
+# Install dependencies via pre-compiled wheels
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir --no-deps xgboost>=2.0.0
 
+# Copy all backend code into /app
 COPY backend /app
 
 EXPOSE 8080
