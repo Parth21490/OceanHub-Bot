@@ -37,7 +37,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
 # 0.0.0.0 for Docker/Railway; override with 127.0.0.1 for local-only
 WS_HOST = os.getenv("WS_HOST", "0.0.0.0")
-WS_PORT = int(os.getenv("PORT", os.getenv("WS_PORT", "8080")))
+WS_PORT = int(os.getenv("PORT", os.getenv("WS_PORT", "8000")))
 TIMEFRAME = os.getenv("TIMEFRAME", "1h")
 CANDLE_LIMIT = int(os.getenv("CANDLE_LIMIT", "200"))
 CYCLE_INTERVAL = int(os.getenv("CYCLE_INTERVAL", "60"))
@@ -2421,14 +2421,20 @@ async def handle_health(request):
 
 
 async def start_health_server():
-    app = web.Application()
-    app.router.add_get('/', handle_root)
-    app.router.add_get('/health', handle_health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8000)
-    await site.start()
-    log.info("HTTP Health Check server started on port 8000")
+    if WS_PORT == 8000:
+        log.info("HTTP Health & Status page served directly on WS_PORT (8000)")
+        return
+    try:
+        app = web.Application()
+        app.router.add_get('/', handle_root)
+        app.router.add_get('/health', handle_health)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', 8000)
+        await site.start()
+        log.info("HTTP Health Check server started on port 8000")
+    except Exception as exc:
+        log.warning("Secondary health server on port 8000 skipped: %s", exc)
 
 
 async def perform_shutdown(sig=None):
