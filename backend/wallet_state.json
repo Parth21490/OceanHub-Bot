@@ -1,0 +1,34 @@
+{
+  "wallet_balance": 23.405289970312744,
+  "active_trades": {
+    "ETH/USDT": {
+      "direction": "LONG",
+      "entry_price": 1872.2,
+      "leverage": 5,
+      "stop_loss": 1865.26,
+      "take_profit": 1878.8,
+      "margin": 5.35,
+      "kelly_conf": 0.6093804690234511,
+      "is_scalp": true,
+      "scale_factor": 0.0235,
+      "margin_mode": "ISOLATED",
+      "timestamp": "2026-07-25T17:40:36.785031+00:00"
+    }
+  },
+  "positions": {
+    "ETH/USDT": {
+      "direction": "LONG",
+      "entry_price": 1872.2,
+      "leverage": 5,
+      "stop_loss": 1865.26,
+      "take_profit": 1878.8,
+      "margin": 5.35,
+      "kelly_conf": 0.6093804690234511,
+      "is_scalp": true,
+      "scale_factor": 0.0235,
+      "margin_mode": "ISOLATED",
+      "timestamp": "2026-07-25T17:40:36.785031+00:00"
+    }
+  },
+  "cooldowns": {}
+}

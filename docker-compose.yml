@@ -1,0 +1,68 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: oceanhub-backend
+    restart: always
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    ports:
+      - "8080:8080"
+      - "8000:8000"
+    volumes:
+      # Persist wallet state and trade history across container restarts
+      - ./backend/trade_history.json:/app/trade_history.json
+      - ./backend/wallet_state.json:/app/wallet_state.json
+      # Persist feature schema
+      - ./backend/feature_schema.json:/app/feature_schema.json
+      # Persist trained ML models, scalers, and selected features for all assets
+      - ./backend/models:/app/models
+      # Persist Master AI Core logs
+      - ./backend/logs:/app/logs
+    env_file:
+      - ./backend/.env
+    environment:
+      - WS_PORT=8080
+      - TIMEFRAME=1h
+      - CANDLE_LIMIT=200
+      - CYCLE_INTERVAL=60
+      - TZ=UTC
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend.Dockerfile
+    container_name: oceanhub-frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_started
+    environment:
+      - VITE_BACKEND_WS=ws://localhost:8080
+      - TZ=UTC
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+networks:
+  default:
+    name: oceanhub_network

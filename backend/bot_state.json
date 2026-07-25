@@ -1,0 +1,34 @@
+{
+  "wallet_balance": 42.88,
+  "active_trades": {
+    "BTC/USDT": {
+      "direction": "SHORT",
+      "entry_price": 63967.5,
+      "leverage": 5,
+      "stop_loss": 64369.2,
+      "take_profit": 63172.4,
+      "margin": 14.86,
+      "kelly_conf": 0.66485,
+      "is_scalp": false,
+      "scale_factor": 0.1621,
+      "margin_mode": "ISOLATED",
+      "timestamp": "2026-07-24T17:05:20.298738+00:00"
+    }
+  },
+  "positions": {
+    "BTC/USDT": {
+      "direction": "SHORT",
+      "entry_price": 63967.5,
+      "leverage": 5,
+      "stop_loss": 64369.2,
+      "take_profit": 63172.4,
+      "margin": 14.86,
+      "kelly_conf": 0.66485,
+      "is_scalp": false,
+      "scale_factor": 0.1621,
+      "margin_mode": "ISOLATED",
+      "timestamp": "2026-07-24T17:05:20.298738+00:00"
+    }
+  },
+  "cooldowns": {}
+}
