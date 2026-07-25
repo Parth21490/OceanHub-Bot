@@ -1,20 +1,16 @@
-# ─── OceanHub Backend — Dockerfile ───────────────────────────────────────────
+# ─── OceanHub Root Dockerfile for Railway ───────────────────────────────────
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Copy requirements first for layer caching
-COPY requirements.txt .
+COPY backend/requirements.txt /app/requirements.txt
 
-# Install Python dependencies via pre-compiled binary wheels
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir --no-deps xgboost>=2.0.0
 
-# Copy backend code
-COPY . .
+COPY backend /app
 
-# Expose server port
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
