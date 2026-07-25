@@ -156,7 +156,14 @@ def _bybit_exchange():
             "public": "https://api-testnet.bybit.com",
             "private": "https://api-testnet.bybit.com",
         }}
-    # No keys → use mainnet public endpoint (OHLCV is public, no auth needed)
+    else:
+        # Use bytick.com domain mirror for public data to bypass CloudFront US IP 403 Forbidden on Railway/AWS
+        params["urls"] = {
+            "api": {
+                "public": "https://api.bytick.com",
+                "private": "https://api.bytick.com",
+            }
+        }
     ex = ccxt_async.bybit(params)
 
     # Apply global market cache if populated to avoid instruments-info API
@@ -197,6 +204,9 @@ def _bybit_exchange():
                 try:
                     return await orig_method(symbol, *args_list, **kwargs)
                 except Exception as exc:
+                    if "403" in str(exc) or "CloudFront" in str(exc):
+                        ex.urls["api"]["public"] = "https://api.bytick.com"
+                        ex.urls["api"]["private"] = "https://api.bytick.com"
                     if attempt == 3:
                         logger.warning(
                             "[WARNING] Max retries reached for %s on %s. Skipping: %s",

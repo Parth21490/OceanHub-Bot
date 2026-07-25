@@ -1060,10 +1060,7 @@ class MLBrain:
         # Create a fresh exchange with explicit linear market type and no API keys
         # This avoids the defaultType=spot issue and the option market error
         import tools
-        exchange = ccxt_async.bybit({
-            "enableRateLimit": True,
-            "options": {"defaultType": "linear", "fetchMarkets": ["linear"]},
-        })
+        exchange = tools._bybit_exchange()
         if tools.MARKET_CACHE is not None:
             exchange.set_markets(tools.MARKET_CACHE)
         try:
