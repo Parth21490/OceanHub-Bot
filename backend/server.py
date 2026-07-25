@@ -905,6 +905,57 @@ async def update_sub_agent_ui(
         log.debug("Background sub-agents UI update for %s: %s", symbol, exc)
 
 
+async def http_process_request(connection, request):
+    headers = getattr(request, 'headers', {})
+    if headers.get('Upgrade', '').lower() == 'websocket':
+        return None
+
+    path = getattr(request, 'path', '/')
+    if path == '/health':
+        body = json.dumps({"status": "healthy", "service": "OceanHub Bot"}).encode("utf-8")
+        return (200, [("Content-Type", "application/json"), ("Content-Length", str(len(body)))], body)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>OceanHub AI Trading Bot</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b0e14; color: #e2e8f0; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 90vh; text-align: center; }}
+        .card {{ background: #151922; border: 1px solid #222938; border-radius: 16px; padding: 32px; max-width: 480px; width: 100%; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5); }}
+        .badge {{ background: #059669; color: white; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; display: inline-block; margin-bottom: 16px; letter-spacing: 0.5px; }}
+        h1 {{ color: #ffffff; font-size: 24px; margin: 0 0 8px 0; font-weight: 700; }}
+        p {{ color: #94a3b8; font-size: 14px; margin: 0 0 24px 0; line-height: 1.5; }}
+        .metrics {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px; }}
+        .metric-box {{ background: #0b0e14; border: 1px solid #1e293b; padding: 16px; border-radius: 10px; }}
+        .metric-val {{ font-size: 18px; font-weight: bold; color: #38bdf8; }}
+        .metric-lbl {{ font-size: 12px; color: #64748b; margin-top: 4px; }}
+        .footer {{ font-size: 12px; color: #475569; border-top: 1px solid #1e293b; padding-top: 16px; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="badge">● BOT OPERATIONAL</div>
+        <h1>OceanHub AI Master Engine</h1>
+        <p>Neural Substrate & Real-time Trading Core are online. All WebSocket endpoints active.</p>
+        <div class="metrics">
+            <div class="metric-box">
+                <div class="metric-val">{len(SYMBOLS)}</div>
+                <div class="metric-lbl">Active Assets</div>
+            </div>
+            <div class="metric-box">
+                <div class="metric-val">1h / 60s</div>
+                <div class="metric-lbl">Analysis Cycle</div>
+            </div>
+        </div>
+        <div class="footer">Deployed on Railway • WebSocket & HTTP Unified</div>
+    </div>
+</body>
+</html>""".encode("utf-8")
+
+    return (200, [("Content-Type", "text/html; charset=utf-8"), ("Content-Length", str(len(html)))], html)
+
+
 # ── WebSocket connection handler ────────────────────────────────────────
 
 async def handle_client(websocket: websockets.WebSocketServerProtocol) -> None:
@@ -2518,6 +2569,7 @@ async def main() -> None:
         WS_HOST,
         WS_PORT,
         origins=None,
+        process_request=http_process_request,
     ):
         log.info("WebSocket server listening on ws://%s:%d", WS_HOST, WS_PORT)
         try:
