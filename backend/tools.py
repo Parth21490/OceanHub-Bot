@@ -24,7 +24,17 @@ except ImportError:
     _USE_TA = False
 
 
-MARKET_CACHE = None
+DEFAULT_MARKETS = {
+    'BTC/USDT': {'id': 'BTCUSDT', 'symbol': 'BTC/USDT', 'base': 'BTC', 'quote': 'USDT', 'spot': False, 'type': 'linear', 'linear': True, 'swap': True, 'contract': True, 'settle': 'USDT', 'precision': {'price': 0.1, 'amount': 0.001}, 'limits': {}},
+    'ETH/USDT': {'id': 'ETHUSDT', 'symbol': 'ETH/USDT', 'base': 'ETH', 'quote': 'USDT', 'spot': False, 'type': 'linear', 'linear': True, 'swap': True, 'contract': True, 'settle': 'USDT', 'precision': {'price': 0.01, 'amount': 0.01}, 'limits': {}},
+    'SOL/USDT': {'id': 'SOLUSDT', 'symbol': 'SOL/USDT', 'base': 'SOL', 'quote': 'USDT', 'spot': False, 'type': 'linear', 'linear': True, 'swap': True, 'contract': True, 'settle': 'USDT', 'precision': {'price': 0.01, 'amount': 0.1}, 'limits': {}},
+    'BNB/USDT': {'id': 'BNBUSDT', 'symbol': 'BNB/USDT', 'base': 'BNB', 'quote': 'USDT', 'spot': False, 'type': 'linear', 'linear': True, 'swap': True, 'contract': True, 'settle': 'USDT', 'precision': {'price': 0.01, 'amount': 0.01}, 'limits': {}},
+    'HYPE/USDT': {'id': 'HYPEUSDT', 'symbol': 'HYPE/USDT', 'base': 'HYPE', 'quote': 'USDT', 'spot': False, 'type': 'linear', 'linear': True, 'swap': True, 'contract': True, 'settle': 'USDT', 'precision': {'price': 0.01, 'amount': 0.1}, 'limits': {}},
+    'XRP/USDT': {'id': 'XRPUSDT', 'symbol': 'XRP/USDT', 'base': 'XRP', 'quote': 'USDT', 'spot': False, 'type': 'linear', 'linear': True, 'swap': True, 'contract': True, 'settle': 'USDT', 'precision': {'price': 0.0001, 'amount': 1.0}, 'limits': {}},
+    'ADA/USDT': {'id': 'ADAUSDT', 'symbol': 'ADA/USDT', 'base': 'ADA', 'quote': 'USDT', 'spot': False, 'type': 'linear', 'linear': True, 'swap': True, 'contract': True, 'settle': 'USDT', 'precision': {'price': 0.0001, 'amount': 1.0}, 'limits': {}},
+    'DOGE/USDT': {'id': 'DOGEUSDT', 'symbol': 'DOGE/USDT', 'base': 'DOGE', 'quote': 'USDT', 'spot': False, 'type': 'linear', 'linear': True, 'swap': True, 'contract': True, 'settle': 'USDT', 'precision': {'price': 0.00001, 'amount': 1.0}, 'limits': {}},
+}
+MARKET_CACHE = DEFAULT_MARKETS
 
 
 def get_tick_decimals(symbol: str) -> int:
@@ -170,6 +180,8 @@ def _bybit_exchange():
     # calls
     if MARKET_CACHE is not None:
         ex.set_markets(MARKET_CACHE)
+    else:
+        ex.set_markets(DEFAULT_MARKETS)
 
     # Monkey-patch to enforce 'linear' market symbol formatting and category
     # parameter

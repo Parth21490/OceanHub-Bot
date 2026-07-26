@@ -2546,20 +2546,12 @@ async def main() -> None:
              SYMBOLS, TIMEFRAME, CYCLE_INTERVAL)
 
     try:
-        from tools import _bybit_exchange
+        from tools import DEFAULT_MARKETS
         import tools
-        log.info(
-            "[System] Initialising neural substrate: Loading instrument metadata...")
-        temp_ex = _bybit_exchange()
-        tools.MARKET_CACHE = await temp_ex.load_markets()
-        await temp_ex.close()
-        log.info(
-            "Successfully cached %d linear perpetual markets at startup.", len(
-                tools.MARKET_CACHE))
+        tools.MARKET_CACHE = DEFAULT_MARKETS
+        log.info("[System] Initialising neural substrate: Pre-seeded %d linear perpetual markets.", len(tools.MARKET_CACHE))
     except Exception as cache_err:
-        log.error(
-            "Failed to populate global MARKET_CACHE at startup: %s",
-            cache_err)
+        log.error("Failed to populate global MARKET_CACHE: %s", cache_err)
 
     try:
         from tools import sync_exchange_positions
