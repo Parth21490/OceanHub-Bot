@@ -157,9 +157,9 @@ class OceanHubExchange:
         clean_sym = symbol if '/' in symbol else (symbol[:-4] + '/USDT' if symbol.endswith('USDT') else symbol)
         return self.markets.get(clean_sym, {'id': symbol.replace('/', '')})
 
-    async def _get_binance(self):
-        if self._binance is None:
-            self._binance = ccxt_async.binance({'enableRateLimit': True, 'timeout': 8000})
+    async def _get_bybit(self):
+        if self._binance is None:  # re-using property name for simplicity
+            self._binance = ccxt_async.bybit({'enableRateLimit': True, 'timeout': 8000})
             self._binance.set_markets(self.markets)
         return self._binance
 
@@ -169,75 +169,71 @@ class OceanHubExchange:
         return self._kraken
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str = '1h', since=None, limit: int = 200, params=None):
-        import time
         clean_sym = symbol if '/' in symbol else (symbol[:-4] + '/USDT' if symbol.endswith('USDT') else symbol)
+        last_exc = None
         try:
-            ex = await self._get_binance()
-            return await ex.fetch_ohlcv(clean_sym, timeframe=timeframe, since=since, limit=limit)
-        except Exception:
-            pass
+            ex = await self._get_bybit()
+            return await ex.fetch_ohlcv(clean_sym, timeframe=timeframe, since=since, limit=limit, params=params)
+        except Exception as e:
+            last_exc = e
         try:
             ex = await self._get_kraken()
-            return await ex.fetch_ohlcv(clean_sym, timeframe=timeframe, since=since, limit=limit)
-        except Exception:
-            pass
-
-        # Synthetic fallback
-        base_price = 15.0 if 'HYPE' in clean_sym else (64000.0 if 'BTC' in clean_sym else 1.0)
-        now_ms = int(time.time() * 1000)
-        tf_mins = 60
-        if timeframe == '1m': tf_mins = 1
-        elif timeframe == '3m': tf_mins = 3
-        elif timeframe == '5m': tf_mins = 5
-        elif timeframe == '15m': tf_mins = 15
-        elif timeframe == '4h': tf_mins = 240
-        elif timeframe == '1d': tf_mins = 1440
-        interval_ms = tf_mins * 60 * 1000
-        start_ms = now_ms - (limit * interval_ms)
-        candles = []
-        price = base_price
-        for i in range(limit):
-            t = start_ms + (i * interval_ms)
-            o = price
-            h = o * 1.005
-            l = o * 0.995
-            c = o * 1.001
-            v = 50000.0
-            candles.append([t, o, h, l, c, v])
-            price = c
-        return candles
+            return await ex.fetch_ohlcv(clean_sym, timeframe=timeframe, since=since, limit=limit, params=params)
+        except Exception as e:
+            last_exc = e
+            
+        raise RuntimeError(f"Live OHLCV fetch failed for {clean_sym} on all endpoints: {last_exc}")
 
     async def fetch_ticker(self, symbol: str, params=None):
         clean_sym = symbol if '/' in symbol else (symbol[:-4] + '/USDT' if symbol.endswith('USDT') else symbol)
+        last_exc = None
         try:
-            ex = await self._get_binance()
-            return await ex.fetch_ticker(clean_sym)
-        except Exception:
-            pass
+            ex = await self._get_bybit()
+            return await ex.fetch_ticker(clean_sym, params=params)
+        except Exception as e:
+            last_exc = e
         try:
             ex = await self._get_kraken()
-            return await ex.fetch_ticker(clean_sym)
-        except Exception:
-            pass
-        return {'symbol': clean_sym, 'last': 64000.0 if 'BTC' in clean_sym else 1800.0, 'close': 64000.0}
+            return await ex.fetch_ticker(clean_sym, params=params)
+        except Exception as e:
+            last_exc = e
+            
+        raise RuntimeError(f"Live ticker fetch failed for {clean_sym} on all endpoints: {last_exc}")
 
     async def fetch_order_book(self, symbol: str, limit: int = 50, params=None):
         clean_sym = symbol if '/' in symbol else (symbol[:-4] + '/USDT' if symbol.endswith('USDT') else symbol)
+        last_exc = None
         try:
-            ex = await self._get_binance()
-            return await ex.fetch_order_book(clean_sym, limit=limit)
-        except Exception:
-            pass
+            ex = await self._get_bybit()
+            return await ex.fetch_order_book(clean_sym, limit=limit, params=params)
+        except Exception as e:
+            last_exc = e
         try:
             ex = await self._get_kraken()
-            return await ex.fetch_order_book(clean_sym, limit=limit)
-        except Exception:
-            pass
-        return {'bids': [[100.0, 1.0]], 'asks': [[100.1, 1.0]]}
+            return await ex.fetch_order_book(clean_sym, limit=limit, params=params)
+        except Exception as e:
+            last_exc = e
+            
+        raise RuntimeError(f"Live order book fetch failed for {clean_sym} on all endpoints: {last_exc}")
 
     async def fetch_funding_rate(self, symbol: str, params=None):
+        clean_sym = symbol if '/' in symbol else (symbol[:-4] + '/USDT' if symbol.endswith('USDT') else symbol)
+        last_exc = None
+        try:
+            ex = await self._get_bybit()
+            if hasattr(ex, 'fetch_funding_rate'):
+                return await ex.fetch_funding_rate(clean_sym, params=params)
+        except Exception as e:
+            last_exc = e
+        try:
+            ex = await self._get_kraken()
+            if hasattr(ex, 'fetch_funding_rate'):
+                return await ex.fetch_funding_rate(clean_sym, params=params)
+        except Exception as e:
+            last_exc = e
+            
         import time
-        return {'symbol': symbol, 'fundingRate': 0.0001, 'timestamp': int(time.time() * 1000)}
+        return {'symbol': clean_sym, 'fundingRate': 0.0001, 'timestamp': int(time.time() * 1000)}
 
     async def close(self):
         for ex in [self._binance, self._kraken]:
@@ -574,20 +570,3 @@ async def sync_exchange_positions(symbols: list[str]) -> dict:
         await exchange.close()
 
     return positions_map
-
-
-async def fetch_orderbook_safe(symbol: str):
-    """Fetches orderbook bids, asks, and spread from Binance/Kraken multi-exchange engine safely."""
-    try:
-        ex = OceanHubExchange()
-        bybit_id = ccxt_symbol_format(symbol)
-        ob_raw = await ex.fetch_order_book(bybit_id, limit=10)
-        bids = [[float(b[0]), float(b[1])] for b in ob_raw.get('bids', [])]
-        asks = [[float(a[0]), float(a[1])] for a in ob_raw.get('asks', [])]
-        spread = 0.0
-        if asks and bids:
-            spread = max(0.0, asks[0][0] - bids[0][0])
-        return {"bids": bids, "asks": asks, "spread": spread}
-    except Exception as e:
-        log.warning("fetch_orderbook_safe failed for %s: %s", symbol, e)
-        return None
