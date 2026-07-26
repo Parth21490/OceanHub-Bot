@@ -923,16 +923,17 @@ async def http_process_request(connection, request=None):
     header_map = {}
     try:
         for k, v in raw_headers.items():
-            header_map[k.lower()] = v
+            header_map[k.lower()] = str(v)
     except Exception:
         pass
 
     # Detect WebSocket Handshake (Upgrade header, Sec-WebSocket-Key, or /ws path)
     upgrade_val = header_map.get("upgrade", "").lower()
+    connection_val = header_map.get("connection", "").lower()
     has_sec_key = bool(header_map.get("sec-websocket-key", ""))
     req_path = getattr(req, "path", "/") if req else getattr(connection, "path", "/")
 
-    if req_path.startswith("/ws") or upgrade_val == "websocket" or has_sec_key:
+    if req_path.startswith("/ws") or upgrade_val == "websocket" or "upgrade" in connection_val or has_sec_key:
         # Return None so websockets library performs 101 Switching Protocols
         return None
 
@@ -963,17 +964,27 @@ async def http_process_request(connection, request=None):
         try:
             with open(file_path, "rb") as f:
                 content = f.read()
-            return (200, [("Content-Type", mime_type), ("Content-Length", str(len(content)))], content)
+            return (200, [
+                ("Content-Type", mime_type),
+                ("Cache-Control", "public, max-age=31536000, immutable" if not file_path.endswith('.html') else "no-cache"),
+                ("Content-Length", str(len(content)))
+            ], content)
         except Exception as exc:
             log.error("Failed serving static asset %s: %s", clean_path, exc)
 
-    # Fallback to SPA index.html
+    # Fallback to SPA index.html with Cache-Control: no-cache to prevent stale browser caching
     index_path = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(index_path) and os.path.isfile(index_path):
         try:
             with open(index_path, "rb") as f:
                 content = f.read()
-            return (200, [("Content-Type", "text/html; charset=utf-8"), ("Content-Length", str(len(content)))], content)
+            return (200, [
+                ("Content-Type", "text/html; charset=utf-8"),
+                ("Cache-Control", "no-cache, no-store, must-revalidate"),
+                ("Pragma", "no-cache"),
+                ("Expires", "0"),
+                ("Content-Length", str(len(content)))
+            ], content)
         except Exception as exc:
             log.error("Failed serving index.html: %s", exc)
 
