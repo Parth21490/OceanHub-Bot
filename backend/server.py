@@ -1191,19 +1191,10 @@ async def handle_client(websocket) -> None:
                             if not ohlcv_raw:
                                 raise ValueError(f"No OHLCV candles returned for {sym}")
 
-                            df = pd.DataFrame(ohlcv_raw, columns=["time", "open", "high", "low", "close", "volume"])
+                            df = pd.DataFrame(ohlcv_raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                            df["time"] = (df["timestamp"] / 1000).astype(int)
 
-                            formatted_candles = [
-                                {
-                                    "time": int(row[0]),
-                                    "open": float(row[1]),
-                                    "high": float(row[2]),
-                                    "low": float(row[3]),
-                                    "close": float(row[4]),
-                                    "volume": float(row[5])
-                                }
-                                for row in ohlcv_raw
-                            ]
+                            formatted_candles = df[["time","open","high","low","close","volume"]].to_dict(orient="records")
 
                             if sym not in HISTORY_CACHE:
                                 HISTORY_CACHE[sym] = {}
@@ -1212,6 +1203,12 @@ async def handle_client(websocket) -> None:
                             if sym not in LATEST_OHLCV_CACHE:
                                 LATEST_OHLCV_CACHE[sym] = {}
                             LATEST_OHLCV_CACHE[sym]["1h"] = formatted_candles
+
+                            # Also seed the other panes with the same 1h data so
+                            # all chart panes have something to show for dynamic tokens
+                            for extra_pane in ["1d", "4h", "15m", "3m", "1m"]:
+                                HISTORY_CACHE[sym][extra_pane] = formatted_candles
+                                LATEST_OHLCV_CACHE[sym][extra_pane] = formatted_candles
 
                         except Exception as fetch_err:
                             log.error(f"[DynamicAsset] OHLCV fetch failed for {sym}: {fetch_err}")
