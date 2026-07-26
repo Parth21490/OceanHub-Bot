@@ -905,6 +905,11 @@ async def update_sub_agent_ui(
         log.debug("Background sub-agents UI update for %s: %s", symbol, exc)
 
 
+# ── Static File Server Setup ───────────────────────────────────────────
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "dist")
+if not os.path.exists(STATIC_DIR):
+    STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "out", "renderer")
+
 async def http_process_request(connection, request):
     headers = getattr(request, 'headers', {})
     if headers.get('Upgrade', '').lower() == 'websocket':
@@ -915,6 +920,44 @@ async def http_process_request(connection, request):
         body = json.dumps({"status": "healthy", "service": "OceanHub Bot"}).encode("utf-8")
         return (200, [("Content-Type", "application/json"), ("Content-Length", str(len(body)))], body)
 
+    # Resolve static file path
+    req_path = path.lstrip('/').split('?')[0]
+    file_path = os.path.join(STATIC_DIR, req_path)
+
+    # Serve static assets (JS, CSS, SVG, PNG, etc.)
+    if req_path and os.path.exists(file_path) and os.path.isfile(file_path):
+        mime_type = "application/octet-stream"
+        if file_path.endswith('.html'):
+            mime_type = "text/html; charset=utf-8"
+        elif file_path.endswith('.js'):
+            mime_type = "application/javascript; charset=utf-8"
+        elif file_path.endswith('.css'):
+            mime_type = "text/css; charset=utf-8"
+        elif file_path.endswith('.svg'):
+            mime_type = "image/svg+xml"
+        elif file_path.endswith('.png'):
+            mime_type = "image/png"
+        elif file_path.endswith('.ico'):
+            mime_type = "image/x-icon"
+
+        try:
+            with open(file_path, "rb") as f:
+                content = f.read()
+            return (200, [("Content-Type", mime_type), ("Content-Length", str(len(content)))], content)
+        except Exception as exc:
+            log.error("Failed serving static asset %s: %s", req_path, exc)
+
+    # Fallback to SPA index.html for root or client-side routing
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_path) and os.path.isfile(index_path):
+        try:
+            with open(index_path, "rb") as f:
+                content = f.read()
+            return (200, [("Content-Type", "text/html; charset=utf-8"), ("Content-Length", str(len(content)))], content)
+        except Exception as exc:
+            log.error("Failed serving index.html: %s", exc)
+
+    # Status card fallback if dist/ is not built
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -2378,30 +2421,41 @@ async def start_symbol_tasks(symbol: str):
 
 
 async def handle_root(request):
-    html_content = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>OceanHub AI Trading Terminal</title>
-        <meta http-equiv="refresh" content="2;url=http://localhost:3000" />
-        <style>
-            body { background: #0a0d14; color: #fff; font-family: monospace; text-align: center; padding-top: 15vh; }
-            a { color: #22d3ee; text-decoration: none; font-weight: bold; }
-            .card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); display: inline-block; padding: 30px; border-radius: 12px; }
-            .btn { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #0891b2; color: white; border-radius: 8px; font-weight: bold; }
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <h2>◈ OceanHub Backend Server Active</h2>
-            <p>You are accessing the <b>Backend API Port (8000)</b>.</p>
-            <p>Redirecting you to the <b>Trading Dashboard UI</b> at <a href="http://localhost:3000">http://localhost:3000</a>...</p>
-            <a href="http://localhost:3000" class="btn">Open Trading Dashboard (Port 3000) ➔</a>
-        </div>
-    </body>
-    </html>
-    """
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_path) and os.path.isfile(index_path):
+        try:
+            with open(index_path, "rb") as f:
+                content = f.read()
+            return web.Response(body=content, content_type='text/html', status=200)
+        except Exception as exc:
+            log.error("Failed serving index.html in handle_root: %s", exc)
+
+    html_content = """<!DOCTYPE html><html><body><h2>OceanHub Engine Active</h2></body></html>"""
     return web.Response(text=html_content, content_type='text/html', status=200)
+
+
+async def handle_static_assets(request):
+    req_path = request.path.lstrip('/').split('?')[0]
+    file_path = os.path.join(STATIC_DIR, req_path)
+    if req_path and os.path.exists(file_path) and os.path.isfile(file_path):
+        mime_type = "application/octet-stream"
+        if file_path.endswith('.html'):
+            mime_type = "text/html"
+        elif file_path.endswith('.js'):
+            mime_type = "application/javascript"
+        elif file_path.endswith('.css'):
+            mime_type = "text/css"
+        elif file_path.endswith('.svg'):
+            mime_type = "image/svg+xml"
+        elif file_path.endswith('.png'):
+            mime_type = "image/png"
+        try:
+            with open(file_path, "rb") as f:
+                content = f.read()
+            return web.Response(body=content, content_type=mime_type, status=200)
+        except Exception:
+            pass
+    return await handle_root(request)
 
 
 async def handle_health(request):
@@ -2426,13 +2480,13 @@ async def start_health_server():
         return
     try:
         app = web.Application()
-        app.router.add_get('/', handle_root)
         app.router.add_get('/health', handle_health)
+        app.router.add_get('/{tail:.*}', handle_static_assets)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', 8000)
         await site.start()
-        log.info("HTTP Health Check server started on port 8000")
+        log.info("HTTP Health & Static Web Dashboard server started on port 8000")
     except Exception as exc:
         log.warning("Secondary health server on port 8000 skipped: %s", exc)
 

@@ -6,11 +6,10 @@ import HomeDashboard from './components/HomeDashboard'
 
 // Determine WebSocket URL based on environment
 const getWebSocketUrl = () => {
-  // In Docker, use 'backend' service hostname
   if (import.meta.env.PROD) {
-    return `ws://${window.location.hostname}:8080`
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${protocol}//${window.location.host}`
   }
-  // In local dev, use localhost
   return 'ws://127.0.0.1:8080'
 }
 
