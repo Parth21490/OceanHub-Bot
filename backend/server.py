@@ -910,34 +910,54 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "dist")
 if not os.path.exists(STATIC_DIR):
     STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "out", "renderer")
 
-async def http_process_request(connection, request):
-    headers = getattr(request, 'headers', {})
-    if headers.get('Upgrade', '').lower() == 'websocket':
+async def http_process_request(connection, request=None):
+    req = request if request is not None else getattr(connection, "request", None)
+
+    # Extract headers defensively from request or connection
+    raw_headers = {}
+    if req and hasattr(req, "headers"):
+        raw_headers = req.headers
+    elif hasattr(connection, "request_headers"):
+        raw_headers = connection.request_headers
+
+    header_map = {}
+    try:
+        for k, v in raw_headers.items():
+            header_map[k.lower()] = v
+    except Exception:
+        pass
+
+    # Detect WebSocket Handshake (Upgrade header, Sec-WebSocket-Key, or /ws path)
+    upgrade_val = header_map.get("upgrade", "").lower()
+    has_sec_key = bool(header_map.get("sec-websocket-key", ""))
+    req_path = getattr(req, "path", "/") if req else getattr(connection, "path", "/")
+
+    if upgrade_val == "websocket" or has_sec_key or req_path == "/ws":
+        # Return None so websockets library performs 101 Switching Protocols
         return None
 
-    path = getattr(request, 'path', '/')
-    if path == '/health':
+    # Handle health check
+    if req_path == "/health":
         body = json.dumps({"status": "healthy", "service": "OceanHub Bot"}).encode("utf-8")
         return (200, [("Content-Type", "application/json"), ("Content-Length", str(len(body)))], body)
 
-    # Resolve static file path
-    req_path = path.lstrip('/').split('?')[0]
-    file_path = os.path.join(STATIC_DIR, req_path)
+    # Static File Server for SPA
+    clean_path = req_path.lstrip("/").split("?")[0]
+    file_path = os.path.join(STATIC_DIR, clean_path)
 
-    # Serve static assets (JS, CSS, SVG, PNG, etc.)
-    if req_path and os.path.exists(file_path) and os.path.isfile(file_path):
+    if clean_path and os.path.exists(file_path) and os.path.isfile(file_path):
         mime_type = "application/octet-stream"
-        if file_path.endswith('.html'):
+        if file_path.endswith(".html"):
             mime_type = "text/html; charset=utf-8"
-        elif file_path.endswith('.js'):
+        elif file_path.endswith(".js"):
             mime_type = "application/javascript; charset=utf-8"
-        elif file_path.endswith('.css'):
+        elif file_path.endswith(".css"):
             mime_type = "text/css; charset=utf-8"
-        elif file_path.endswith('.svg'):
+        elif file_path.endswith(".svg"):
             mime_type = "image/svg+xml"
-        elif file_path.endswith('.png'):
+        elif file_path.endswith(".png"):
             mime_type = "image/png"
-        elif file_path.endswith('.ico'):
+        elif file_path.endswith(".ico"):
             mime_type = "image/x-icon"
 
         try:
@@ -945,9 +965,9 @@ async def http_process_request(connection, request):
                 content = f.read()
             return (200, [("Content-Type", mime_type), ("Content-Length", str(len(content)))], content)
         except Exception as exc:
-            log.error("Failed serving static asset %s: %s", req_path, exc)
+            log.error("Failed serving static asset %s: %s", clean_path, exc)
 
-    # Fallback to SPA index.html for root or client-side routing
+    # Fallback to SPA index.html
     index_path = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(index_path) and os.path.isfile(index_path):
         try:
@@ -957,46 +977,7 @@ async def http_process_request(connection, request):
         except Exception as exc:
             log.error("Failed serving index.html: %s", exc)
 
-    # Status card fallback if dist/ is not built
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <title>OceanHub AI Trading Bot</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b0e14; color: #e2e8f0; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 90vh; text-align: center; }}
-        .card {{ background: #151922; border: 1px solid #222938; border-radius: 16px; padding: 32px; max-width: 480px; width: 100%; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5); }}
-        .badge {{ background: #059669; color: white; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; display: inline-block; margin-bottom: 16px; letter-spacing: 0.5px; }}
-        h1 {{ color: #ffffff; font-size: 24px; margin: 0 0 8px 0; font-weight: 700; }}
-        p {{ color: #94a3b8; font-size: 14px; margin: 0 0 24px 0; line-height: 1.5; }}
-        .metrics {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px; }}
-        .metric-box {{ background: #0b0e14; border: 1px solid #1e293b; padding: 16px; border-radius: 10px; }}
-        .metric-val {{ font-size: 18px; font-weight: bold; color: #38bdf8; }}
-        .metric-lbl {{ font-size: 12px; color: #64748b; margin-top: 4px; }}
-        .footer {{ font-size: 12px; color: #475569; border-top: 1px solid #1e293b; padding-top: 16px; }}
-    </style>
-</head>
-<body>
-    <div class="card">
-        <div class="badge">● BOT OPERATIONAL</div>
-        <h1>OceanHub AI Master Engine</h1>
-        <p>Neural Substrate & Real-time Trading Core are online. All WebSocket endpoints active.</p>
-        <div class="metrics">
-            <div class="metric-box">
-                <div class="metric-val">{len(SYMBOLS)}</div>
-                <div class="metric-lbl">Active Assets</div>
-            </div>
-            <div class="metric-box">
-                <div class="metric-val">1h / 60s</div>
-                <div class="metric-lbl">Analysis Cycle</div>
-            </div>
-        </div>
-        <div class="footer">Deployed on Railway • WebSocket & HTTP Unified</div>
-    </div>
-</body>
-</html>""".encode("utf-8")
-
-    return (200, [("Content-Type", "text/html; charset=utf-8"), ("Content-Length", str(len(html)))], html)
+    return (404, [("Content-Type", "text/plain")], b"Not Found")
 
 
 # ── WebSocket connection handler ────────────────────────────────────────
