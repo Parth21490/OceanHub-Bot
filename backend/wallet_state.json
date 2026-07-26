@@ -1,34 +1,36 @@
 {
-  "wallet_balance": 23.405289970312744,
+  "wallet_balance": 10.376330796570965,
   "active_trades": {
-    "ETH/USDT": {
+    "BNB/USDT": {
       "direction": "LONG",
-      "entry_price": 1872.2,
+      "entry_price": 571.5,
       "leverage": 5,
-      "stop_loss": 1865.26,
-      "take_profit": 1878.8,
-      "margin": 5.35,
-      "kelly_conf": 0.6093804690234511,
-      "is_scalp": true,
-      "scale_factor": 0.0235,
+      "stop_loss": 569.85,
+      "take_profit": 574.77,
+      "margin": 13.25,
+      "kelly_conf": 0.6433178341082947,
+      "is_scalp": false,
+      "scale_factor": 0.1083,
       "margin_mode": "ISOLATED",
-      "timestamp": "2026-07-25T17:40:36.785031+00:00"
+      "timestamp": "2026-07-26T05:22:24.215230+00:00"
     }
   },
   "positions": {
-    "ETH/USDT": {
+    "BNB/USDT": {
       "direction": "LONG",
-      "entry_price": 1872.2,
+      "entry_price": 571.5,
       "leverage": 5,
-      "stop_loss": 1865.26,
-      "take_profit": 1878.8,
-      "margin": 5.35,
-      "kelly_conf": 0.6093804690234511,
-      "is_scalp": true,
-      "scale_factor": 0.0235,
+      "stop_loss": 569.85,
+      "take_profit": 574.77,
+      "margin": 13.25,
+      "kelly_conf": 0.6433178341082947,
+      "is_scalp": false,
+      "scale_factor": 0.1083,
       "margin_mode": "ISOLATED",
-      "timestamp": "2026-07-25T17:40:36.785031+00:00"
+      "timestamp": "2026-07-26T05:22:24.215230+00:00"
     }
   },
-  "cooldowns": {}
+  "cooldowns": {
+    "ETH/USDT": 1785035017.4419692
+  }
 }
