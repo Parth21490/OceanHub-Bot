@@ -1058,51 +1058,90 @@ async def handle_client(websocket) -> None:
     except Exception as history_err:
         log.error("Failed to seed initial log history: %s", history_err)
 
+    # ── Seed charts immediately on new connection from in-memory cache ──────
+    async def seed_connection_history():
+        symbol = CURRENT_SYMBOL
+        try:
+            cached = LATEST_OHLCV_CACHE.get(
+                symbol) or HISTORY_CACHE.get(symbol, {})
+            if cached:
+                seeded_data = {k: v for k, v in cached.items() if v}
+                await send_ws_msg(websocket, {
+                    "type": "INIT_CHART_HISTORY",
+                    "symbol": symbol,
+                    "data": seeded_data
+                })
+                log.info(
+                    "[WS] Sent INIT_CHART_HISTORY to new client for %s (from cache)",
+                    symbol)
+            else:
+                log.info("[WS] Cache empty for %s on connection", symbol)
+        except Exception as e:
+            log.error("Failed to seed history on new connection: %s", e)
+    asyncio.create_task(seed_connection_history())
+
     try:
         async for raw in websocket:
             try:
-                payload = raw.data if hasattr(raw, "data") else raw
-                if not payload or not isinstance(payload, (str, bytes, bytearray)):
-                    continue
-                msg = json.loads(payload)
-            except (json.JSONDecodeError, TypeError):
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
                 continue
 
             msg_type = msg.get("type")
 
             if msg_type == "ping":
-                await send_ws_msg(websocket, {"type": "pong"})
+                await websocket.send(safe_json({"type": "pong"}))
 
             elif msg_type == "get_history":
                 symbol = msg.get("symbol", CURRENT_SYMBOL)
-                # Serve history from in-memory cache - no Bybit API call
 
                 async def _seed_get_history(sym=symbol):
                     try:
-                        cached = LATEST_OHLCV_CACHE.get(
-                            sym) or HISTORY_CACHE.get(sym, {})
+                        cached = LATEST_OHLCV_CACHE.get(sym) or HISTORY_CACHE.get(sym, {})
                         if cached:
-                            seeded_data = {
-                                k: v for k, v in cached.items() if v}
-                            await send_ws_msg(websocket, {
+                            seeded_data = {k: v for k, v in cached.items() if v}
+                            await websocket.send(safe_json({
                                 "type": "INIT_CHART_HISTORY",
                                 "symbol": sym,
                                 "data": seeded_data
-                            })
-                            if sym in LAST_ORDERBOOKS and LAST_ORDERBOOKS[sym]:
-                                await send_ws_msg(websocket, {
-                                    "type": "ORDERBOOK",
-                                    "symbol": sym,
-                                    "data": LAST_ORDERBOOKS[sym]
-                                })
-                            log.info(
-                                "[WS] Sent INIT_CHART_HISTORY for get_history request: %s (from cache)", sym)
+                            }))
+                            log.info("[WS] Sent INIT_CHART_HISTORY for get_history: %s (%d panes from cache)", sym, len(seeded_data))
                         else:
-                            log.warning(
-                                "[WS] Cache empty for get_history request: %s", sym)
+                            # Cache is cold — live-fetch all panes for this symbol
+                            log.warning("[WS] Cache cold for %s — triggering live fetch for all panes", sym)
+                            try:
+                                from tools import _bybit_exchange, ccxt_symbol_format
+                                ex = _bybit_exchange()
+                                sym_id = ccxt_symbol_format(sym, ex)
+                                pane_limits = {'1d': 500, '4h': 500, '1h': 500, '15m': 300, '3m': 200, '1m': 200}
+                                tf_map = {'1d': '1d', '4h': '4h', '1h': '1h', '15m': '15m', '3m': '3m', '1m': '1m'}
+                                fetched = {}
+                                for pid, tf in tf_map.items():
+                                    try:
+                                        raw = await ex.fetch_ohlcv(sym_id, timeframe=tf, limit=pane_limits[pid], params={'category': 'linear'})
+                                        if raw:
+                                            df_p = pd.DataFrame(raw, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                                            df_p['time'] = (df_p['timestamp'] / 1000).astype(int)
+                                            df_p = compute_indicators(df_p, pid)
+                                            records = df_p.to_dict(orient='records')
+                                            fetched[pid] = records
+                                            HISTORY_CACHE.setdefault(sym, {})[pid] = records
+                                            LATEST_OHLCV_CACHE.setdefault(sym, {})[pid] = records
+                                    except Exception as pane_err:
+                                        log.warning("[WS] Pane %s fetch failed for %s: %s", pid, sym, pane_err)
+                                    await asyncio.sleep(0.1)
+                                await ex.close()
+                                if fetched:
+                                    await websocket.send(safe_json({
+                                        "type": "INIT_CHART_HISTORY",
+                                        "symbol": sym,
+                                        "data": fetched
+                                    }))
+                                    log.info("[WS] Live-fetched INIT_CHART_HISTORY for %s (%d panes)", sym, len(fetched))
+                            except Exception as fetch_err:
+                                log.error("[WS] Cold-start live fetch failed for %s: %s", sym, fetch_err)
                     except Exception as e:
-                        log.error(
-                            "Failed to serve history from cache for %s: %s", sym, e)
+                        log.error("Failed to serve history for %s: %s", sym, e)
                 asyncio.create_task(_seed_get_history())
 
             elif msg_type == "SWITCH_SYMBOL":
@@ -1122,17 +1161,11 @@ async def handle_client(websocket) -> None:
                             if cached:
                                 seeded_data = {
                                     k: v for k, v in cached.items() if v}
-                                await send_ws_msg(websocket, {
+                                await websocket.send(safe_json({
                                     "type": "INIT_CHART_HISTORY",
                                     "symbol": sym,
                                     "data": seeded_data
-                                })
-                                if sym in LAST_ORDERBOOKS and LAST_ORDERBOOKS[sym]:
-                                    await send_ws_msg(websocket, {
-                                        "type": "ORDERBOOK",
-                                        "symbol": sym,
-                                        "data": LAST_ORDERBOOKS[sym]
-                                    })
+                                }))
                                 log.info(
                                     "[WS] Pushed cache candles for switch to %s", sym)
                             else:
@@ -1146,10 +1179,10 @@ async def handle_client(websocket) -> None:
             elif msg_type == "DYNAMIC_ASSET_SEARCH":
                 raw_symbol = str(msg.get("symbol", "")).strip().upper()
                 if not raw_symbol:
-                    await send_ws_msg(websocket, {
+                    await websocket.send(safe_json({
                         "type": "DYNAMIC_ASSET_ERROR",
                         "error": "Symbol cannot be empty."
-                    })
+                    }))
                     continue
 
                 if "/" not in raw_symbol:
@@ -1162,11 +1195,11 @@ async def handle_client(websocket) -> None:
 
                 async def handle_dynamic_asset_search(sym=raw_symbol):
                     try:
-                        # 1. Exchange ticker validation
                         from tools import _bybit_exchange, ccxt_symbol_format, MARKET_CACHE
                         bybit_id = ccxt_symbol_format(sym)
                         exchange = _bybit_exchange()
-                        
+
+                        # ── 1. Validate asset exists on exchange ────────────────
                         ticker = None
                         if MARKET_CACHE and sym in MARKET_CACHE:
                             ticker = MARKET_CACHE[sym]
@@ -1175,64 +1208,63 @@ async def handle_client(websocket) -> None:
                                 ticker = await exchange.fetch_ticker(bybit_id)
                             except Exception as ex_err:
                                 log.warning(f"[DynamicAsset] Ticker validation failed for {sym}: {ex_err}")
-                        
+
                         if not ticker:
-                            await send_ws_msg(websocket, {
+                            await websocket.send(safe_json({
                                 "type": "DYNAMIC_ASSET_ERROR",
                                 "symbol": sym,
                                 "error": f"Asset '{sym}' not found on exchange."
-                            })
+                            }))
+                            await exchange.close()
                             return
 
-                        # 2. Fetch OHLCV for each pane timeframe so every chart renders correctly
-                        try:
-                            # Timeframe map: pane_id -> (ccxt_tf, limit)
-                            pane_tf_map = {
-                                "1d":  ("1d",  200),
-                                "4h":  ("4h",  200),
-                                "1h":  ("1h",  300),
-                                "15m": ("15m", 200),
-                                "3m":  ("3m",  200),
-                                "1m":  ("1m",  200),
-                            }
+                        # ── 2. Fetch ALL 6 panes with proper candle depth ───────
+                        # This populates the full multi-timeframe chart grid
+                        pane_limits = {'1d': 500, '4h': 500, '1h': 500, '15m': 300, '3m': 200, '1m': 200}
+                        tf_map = {'1d': '1d', '4h': '4h', '1h': '1h', '15m': '15m', '3m': '3m', '1m': '1m'}
+                        chart_data = {}
+                        df_1h = None  # For ML analysis
 
-                            if sym not in HISTORY_CACHE:
-                                HISTORY_CACHE[sym] = {}
-                            if sym not in LATEST_OHLCV_CACHE:
-                                LATEST_OHLCV_CACHE[sym] = {}
+                        for pid, tf in tf_map.items():
+                            try:
+                                raw = await exchange.fetch_ohlcv(
+                                    bybit_id, timeframe=tf,
+                                    limit=pane_limits[pid],
+                                    params={'category': 'linear'}
+                                )
+                                if raw:
+                                    df_p = pd.DataFrame(raw, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                                    df_p['time'] = (df_p['timestamp'] / 1000).astype(int)
+                                    df_p = compute_indicators(df_p, pid)
+                                    records = df_p.to_dict(orient='records')
+                                    chart_data[pid] = records
+                                    # Seed into global caches so SWITCH_SYMBOL & get_history work after search
+                                    HISTORY_CACHE.setdefault(sym, {})[pid] = records
+                                    LATEST_OHLCV_CACHE.setdefault(sym, {})[pid] = records
+                                    if pid == '1h':
+                                        df_1h = df_p.copy()
+                            except Exception as pane_err:
+                                log.warning(f"[DynamicAsset] Pane {pid} fetch failed for {sym}: {pane_err}")
+                            await asyncio.sleep(0.1)  # Rate limit guard
 
-                            # Always fetch 1h first (used for ML analysis too)
-                            ohlcv_raw = await exchange.fetch_ohlcv(bybit_id, timeframe="1h", limit=300)
-                            if not ohlcv_raw:
-                                raise ValueError(f"No OHLCV candles returned for {sym}")
-
-                            # Seed every pane individually with the right timeframe
-                            for pane_id, (tf, limit) in pane_tf_map.items():
-                                try:
-                                    raw = await exchange.fetch_ohlcv(bybit_id, timeframe=tf, limit=limit)
-                                    if not raw:
-                                        raw = ohlcv_raw  # fallback to 1h
-                                except Exception:
-                                    raw = ohlcv_raw  # fallback to 1h
-
-                                df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
-                                df["time"] = (df["timestamp"] / 1000).astype(int)
-                                candles = df[["time", "open", "high", "low", "close", "volume"]].to_dict(orient="records")
-                                HISTORY_CACHE[sym][pane_id] = candles
-                                LATEST_OHLCV_CACHE[sym][pane_id] = candles
-
-                            formatted_candles = HISTORY_CACHE[sym]["1h"]
-
-                        except Exception as fetch_err:
-                            log.error(f"[DynamicAsset] OHLCV fetch failed for {sym}: {fetch_err}")
-                            await send_ws_msg(websocket, {
+                        if not chart_data:
+                            await websocket.send(safe_json({
                                 "type": "DYNAMIC_ASSET_ERROR",
                                 "symbol": sym,
-                                "error": f"Failed to fetch market data for '{sym}': {str(fetch_err)}"
-                            })
+                                "error": f"Failed to fetch market data for '{sym}'"
+                            }))
+                            await exchange.close()
                             return
 
-                        # 3. Run Temporary Agent Analysis
+                        # ── 3. Immediately push full chart history to frontend ──
+                        await websocket.send(safe_json({
+                            "type": "INIT_CHART_HISTORY",
+                            "symbol": sym,
+                            "data": chart_data
+                        }))
+                        log.info(f"[DynamicAsset] Sent INIT_CHART_HISTORY for {sym} ({len(chart_data)} panes)")
+
+                        # ── 4. Fetch orderbook for ML analysis ─────────────────
                         dyn_orderbook = None
                         try:
                             ob_raw = await exchange.fetch_order_book(bybit_id, limit=20)
@@ -1242,24 +1274,29 @@ async def handle_client(websocket) -> None:
                         except Exception as ob_err:
                             log.warning(f"[DynamicAsset] Orderbook fetch failed for {sym}: {ob_err}")
 
-                        from master_agent import run_temporary_agent_analysis
-                        result = await run_temporary_agent_analysis(sym, recent_ohlcv_df=df, orderbook=dyn_orderbook)
+                        await exchange.close()
 
-                        # Send result back to requesting client
-                        await send_ws_msg(websocket, {
+                        # ── 5. Run ML temporary agent analysis ─────────────────
+                        # Use 1h df if available, else fall back to last pane fetched
+                        analysis_df = df_1h if df_1h is not None else None
+                        from master_agent import run_temporary_agent_analysis
+                        result = await run_temporary_agent_analysis(sym, recent_ohlcv_df=analysis_df, orderbook=dyn_orderbook)
+
+                        # ── 6. Send ML result back to frontend ─────────────────
+                        await websocket.send(safe_json({
                             "type": "DYNAMIC_ASSET_RESULT",
                             "data": result
-                        })
-                        log.info(f"[DynamicAsset] Successfully evaluated temporary agent for {sym}: Decision={result.get('decision')}")
+                        }))
+                        log.info(f"[DynamicAsset] Agent result for {sym}: Decision={result.get('decision')}")
 
                     except Exception as dyn_err:
-                        log.error(f"[DynamicAsset] Failed to evaluate dynamic asset {sym}: {dyn_err}")
-                        await send_ws_msg(websocket, {
+                        log.error(f"[DynamicAsset] Execution error for {sym}: {dyn_err}")
+                        await websocket.send(safe_json({
                             "type": "DYNAMIC_ASSET_ERROR",
                             "symbol": sym,
-                            "error": f"Evaluation error for '{sym}': {str(dyn_err)}"
-                        })
-                
+                            "error": f"Dynamic asset analysis failed: {str(dyn_err)}"
+                        }))
+
                 asyncio.create_task(handle_dynamic_asset_search())
 
             elif msg_type == "execute":
@@ -1387,14 +1424,6 @@ async def run_analysis_cycle(symbol: str) -> None:
         if current_price <= 0.0:
             log.error("OHLCV fetch failed for %s: %s", symbol, exc)
             return
-    try:
-        from tools import fetch_orderbook_safe
-        ob_fresh = await fetch_orderbook_safe(symbol)
-        if ob_fresh:
-            LAST_ORDERBOOKS[symbol] = ob_fresh
-            await broadcast({"type": "ORDERBOOK", "symbol": symbol, "data": ob_fresh})
-    except Exception as ob_err:
-        log.warning(f"Orderbook fetch failed for {symbol}: {ob_err}")
 
     # 1. Fetch spread, depth and funding rate metrics FIRST so we can use them
     # in pre-calculated MarketData
@@ -1675,8 +1704,8 @@ async def run_analysis_cycle(symbol: str) -> None:
 
     # Extract decision parameters
     d = decision.get("decision", "HOLD")
-    # Dynamic Leverage unlocked from ML RiskEngine
-    leverage = decision.get("leverage", 1)
+    # Kelly Survival Cap: Hardcode max leverage multiplier of 5x
+    leverage = min(5, decision.get("leverage", 1))
     stop_loss = decision.get("stop_loss")
     take_profit = decision.get("take_profit")
     confidence = decision.get("confidence", 0.0)
@@ -2048,9 +2077,18 @@ async def preload_all_history() -> None:
                     sym,
                     sym_id)
 
+                # Per-pane candle depth: enough bars for all indicators
+                pane_limits = {
+                    '1d': 500,  # 500 daily candles (~2 years) for EMA-200 + ADX
+                    '4h': 500,  # 500 4h candles (~83 days) for Bollinger Bands
+                    '1h': 500,  # 500 1h candles (~21 days) for S/R levels
+                    '15m': 300, # 300 15m candles (~3 days) for RSI
+                    '3m':  200, # 200 3m candles for sniper trigger view
+                    '1m':  200, # 200 1m candles for micro execution view
+                }
                 for pane_id, tf in timeframes.items():
                     params = {'category': 'linear'}
-                    raw = await exchange.fetch_ohlcv(sym_id, timeframe=tf, limit=200, params=params)
+                    raw = await exchange.fetch_ohlcv(sym_id, timeframe=tf, limit=pane_limits.get(pane_id, 300), params=params)
                     if raw:
                         df = pd.DataFrame(
                             raw,
@@ -2119,9 +2157,9 @@ def update_ohlcv_caches(symbol: str, pane_id: str, df: pd.DataFrame):
         existing_by_time = {c["time"]: c for c in existing}
         for nc in records:
             existing_by_time[nc["time"]] = nc
-        # Sort and keep last 200 candles
+        # Sort and keep last 500 candles — enough for EMA-200 + all indicators
         cache[symbol][pane_id] = [existing_by_time[t]
-                                  for t in sorted(existing_by_time.keys())][-200:]
+                                  for t in sorted(existing_by_time.keys())][-500:]
 
 
 async def stream_live_ohlcv_for_symbol(symbol: str) -> None:
