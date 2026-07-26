@@ -6,7 +6,7 @@ import HomeDashboard from './components/HomeDashboard'
 
 // Determine WebSocket URL based on environment
 const getWebSocketUrl = () => {
-  if (import.meta.env.PROD) {
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     return `${protocol}//${window.location.host}`
   }
@@ -285,7 +285,7 @@ export default function App() {
             }}
           />
           <span className="text-[9px] font-mono text-white/35 tracking-widest">
-            ws://localhost:8080
+            {getWebSocketUrl()}
           </span>
           <span
             className="text-[9px] font-mono font-bold tracking-widest px-1.5 py-0.5 rounded border"

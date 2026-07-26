@@ -23,7 +23,7 @@ const BOOT_SEQUENCE = [
   'Calibrating risk parameters.........',
   'Warming up execution engine.........',
   '────────────────────────────────────',
-  'READY. Listening on ws://localhost:8080',
+  'READY. Connected to OceanHub Master AI Engine',
   ''
 ]
 
