@@ -932,7 +932,7 @@ async def http_process_request(connection, request=None):
     has_sec_key = bool(header_map.get("sec-websocket-key", ""))
     req_path = getattr(req, "path", "/") if req else getattr(connection, "path", "/")
 
-    if upgrade_val == "websocket" or has_sec_key or req_path == "/ws":
+    if req_path.startswith("/ws") or upgrade_val == "websocket" or has_sec_key:
         # Return None so websockets library performs 101 Switching Protocols
         return None
 
