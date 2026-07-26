@@ -1184,31 +1184,44 @@ async def handle_client(websocket) -> None:
                             })
                             return
 
-                        # 2. Fetch recent OHLCV history for dynamic analysis
+                        # 2. Fetch OHLCV for each pane timeframe so every chart renders correctly
                         try:
-                            bybit_tf = "60"
-                            ohlcv_raw = await exchange.fetch_ohlcv(bybit_id, timeframe=bybit_tf, limit=300)
-                            if not ohlcv_raw:
-                                raise ValueError(f"No OHLCV candles returned for {sym}")
-
-                            df = pd.DataFrame(ohlcv_raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
-                            df["time"] = (df["timestamp"] / 1000).astype(int)
-
-                            formatted_candles = df[["time","open","high","low","close","volume"]].to_dict(orient="records")
+                            # Timeframe map: pane_id -> (ccxt_tf, limit)
+                            pane_tf_map = {
+                                "1d":  ("1d",  200),
+                                "4h":  ("4h",  200),
+                                "1h":  ("1h",  300),
+                                "15m": ("15m", 200),
+                                "3m":  ("3m",  200),
+                                "1m":  ("1m",  200),
+                            }
 
                             if sym not in HISTORY_CACHE:
                                 HISTORY_CACHE[sym] = {}
-                            HISTORY_CACHE[sym]["1h"] = formatted_candles
-
                             if sym not in LATEST_OHLCV_CACHE:
                                 LATEST_OHLCV_CACHE[sym] = {}
-                            LATEST_OHLCV_CACHE[sym]["1h"] = formatted_candles
 
-                            # Also seed the other panes with the same 1h data so
-                            # all chart panes have something to show for dynamic tokens
-                            for extra_pane in ["1d", "4h", "15m", "3m", "1m"]:
-                                HISTORY_CACHE[sym][extra_pane] = formatted_candles
-                                LATEST_OHLCV_CACHE[sym][extra_pane] = formatted_candles
+                            # Always fetch 1h first (used for ML analysis too)
+                            ohlcv_raw = await exchange.fetch_ohlcv(bybit_id, timeframe="1h", limit=300)
+                            if not ohlcv_raw:
+                                raise ValueError(f"No OHLCV candles returned for {sym}")
+
+                            # Seed every pane individually with the right timeframe
+                            for pane_id, (tf, limit) in pane_tf_map.items():
+                                try:
+                                    raw = await exchange.fetch_ohlcv(bybit_id, timeframe=tf, limit=limit)
+                                    if not raw:
+                                        raw = ohlcv_raw  # fallback to 1h
+                                except Exception:
+                                    raw = ohlcv_raw  # fallback to 1h
+
+                                df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                                df["time"] = (df["timestamp"] / 1000).astype(int)
+                                candles = df[["time", "open", "high", "low", "close", "volume"]].to_dict(orient="records")
+                                HISTORY_CACHE[sym][pane_id] = candles
+                                LATEST_OHLCV_CACHE[sym][pane_id] = candles
+
+                            formatted_candles = HISTORY_CACHE[sym]["1h"]
 
                         except Exception as fetch_err:
                             log.error(f"[DynamicAsset] OHLCV fetch failed for {sym}: {fetch_err}")

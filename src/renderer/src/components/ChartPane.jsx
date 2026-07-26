@@ -231,7 +231,15 @@ export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3e
       sl.macd_line.setData(macdData.map(d => ({ time: d.time, value: d.macd_line })))
       sl.signal_line.setData(macdData.map(d => ({ time: d.time, value: d.signal_line })))
     }
+    // Zoom to last ~100 candles so they render as visible bars, not a diagonal line
     chart.timeScale().fitContent()
+    if (history.length > 100) {
+      try {
+        const last   = normTime(history[history.length - 1].time)
+        const first  = normTime(history[history.length - 100].time)
+        chart.timeScale().setVisibleRange({ from: first, to: last })
+      } catch (_) {}
+    }
   }, [type, paneId])
 
   const subscribe = ws?.subscribe
