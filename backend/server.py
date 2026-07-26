@@ -2601,9 +2601,21 @@ async def main() -> None:
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, WS_HOST, WS_PORT)
-    await site.start()
-    log.info("Unified OceanHub Server listening on http://%s:%d (WebSocket endpoint /ws)", WS_HOST, WS_PORT)
+
+    ports_to_bind = {8000}
+    if os.getenv("PORT"):
+        try:
+            ports_to_bind.add(int(os.getenv("PORT")))
+        except ValueError:
+            pass
+
+    for p in ports_to_bind:
+        try:
+            site = web.TCPSite(runner, WS_HOST, p)
+            await site.start()
+            log.info("Unified OceanHub Production Server listening on http://%s:%d (WebSocket /ws)", WS_HOST, p)
+        except Exception as e:
+            log.warning("Port %d binding note: %s", p, e)
 
     await preload_all_history()
     await start_symbol_tasks("ADA/USDT")
