@@ -1195,7 +1195,7 @@ async def handle_client(websocket) -> None:
 
                             formatted_candles = [
                                 {
-                                    "time": int(row[0]),
+                                    "time": int(row[0] // 1000) if row[0] > 10000000000 else int(row[0]),
                                     "open": float(row[1]),
                                     "high": float(row[2]),
                                     "low": float(row[3]),

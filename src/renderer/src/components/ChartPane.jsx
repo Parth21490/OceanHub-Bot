@@ -90,6 +90,11 @@ function san(v) {
   return v
 }
 
+function normTime(t) {
+  if (typeof t === 'number' && t > 10000000000) return Math.floor(t / 1000)
+  return t
+}
+
 // ── ChartPane ─────────────────────────────────────────────────────────────────
 export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3ee', activeAsset, ws }) {
   const containerRef = useRef(null)
@@ -181,24 +186,24 @@ export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3e
     if (type === 'candlestick') {
       sl.main.setData(history
         .filter(d => san(d.open) !== undefined)
-        .map(d => ({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }))
+        .map(d => ({ time: normTime(d.time), open: d.open, high: d.high, low: d.low, close: d.close }))
       )
       if (paneId === '1d' && sl.ema200) {
-        sl.ema200.setData(history.filter(d => san(d.ema200) !== undefined).map(d => ({ time: d.time, value: d.ema200 })))
+        sl.ema200.setData(history.filter(d => san(d.ema200) !== undefined).map(d => ({ time: normTime(d.time), value: d.ema200 })))
         const last = history[history.length - 1]
         if (last?.adx != null) setAdxValue(last.adx)
       }
       if (paneId === '4h' && sl.bb_upper) {
-        sl.bb_upper.setData( history.filter(d => san(d.bb_upper)  !== undefined).map(d => ({ time: d.time, value: d.bb_upper })))
-        sl.bb_middle.setData(history.filter(d => san(d.bb_middle) !== undefined).map(d => ({ time: d.time, value: d.bb_middle })))
-        sl.bb_lower.setData( history.filter(d => san(d.bb_lower)  !== undefined).map(d => ({ time: d.time, value: d.bb_lower })))
+        sl.bb_upper.setData( history.filter(d => san(d.bb_upper)  !== undefined).map(d => ({ time: normTime(d.time), value: d.bb_upper })))
+        sl.bb_middle.setData(history.filter(d => san(d.bb_middle) !== undefined).map(d => ({ time: normTime(d.time), value: d.bb_middle })))
+        sl.bb_lower.setData( history.filter(d => san(d.bb_lower)  !== undefined).map(d => ({ time: normTime(d.time), value: d.bb_lower })))
       }
       if (paneId === '1h' && sl.resistance) {
-        sl.resistance.setData(history.filter(d => san(d.resistance) !== undefined).map(d => ({ time: d.time, value: d.resistance })))
-        sl.support.setData(   history.filter(d => san(d.support)    !== undefined).map(d => ({ time: d.time, value: d.support })))
+        sl.resistance.setData(history.filter(d => san(d.resistance) !== undefined).map(d => ({ time: normTime(d.time), value: d.resistance })))
+        sl.support.setData(   history.filter(d => san(d.support)    !== undefined).map(d => ({ time: normTime(d.time), value: d.support })))
       }
       if (paneId === '15m' && sl.rsi) {
-        sl.rsi.setData(history.filter(d => san(d.rsi) !== undefined).map(d => ({ time: d.time, value: d.rsi })))
+        sl.rsi.setData(history.filter(d => san(d.rsi) !== undefined).map(d => ({ time: normTime(d.time), value: d.rsi })))
       }
     } else if (type === 'macd' && sl.macd_histogram) {
       let ema12 = 0, ema26 = 0, signal = 0
@@ -215,7 +220,7 @@ export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3e
         else signal = macdLine * kSig + signal * (1 - kSig)
         const signalLine = d.signal_line != null ? d.signal_line : signal
         const hist = d.macd_histogram != null ? d.macd_histogram : (macdLine - signalLine)
-        return { time: d.time, macd_histogram: hist, macd_line: macdLine, signal_line: signalLine }
+        return { time: normTime(d.time), macd_histogram: hist, macd_line: macdLine, signal_line: signalLine }
       })
 
       sl.macd_histogram.setData(macdData.map(d => ({
@@ -249,24 +254,25 @@ export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3e
         const d  = msg.data
         if (!sl.main || !d) return
         console.log(`[ChartPane ${paneId}] OHLCV tick for ${sym}`)
+        const t = normTime(d.time)
         if (san(d.open) !== undefined) {
-          sl.main.update({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close })
+          sl.main.update({ time: t, open: d.open, high: d.high, low: d.low, close: d.close })
         }
         if (paneId === '1d' && sl.ema200 && san(d.ema200) !== undefined) {
-          sl.ema200.update({ time: d.time, value: d.ema200 })
+          sl.ema200.update({ time: t, value: d.ema200 })
           if (d.adx != null) setAdxValue(d.adx)
         }
         if (paneId === '4h' && sl.bb_upper && san(d.bb_upper) !== undefined) {
-          sl.bb_upper.update({ time: d.time, value: d.bb_upper })
-          sl.bb_middle.update({ time: d.time, value: d.bb_middle })
-          sl.bb_lower.update({ time: d.time, value: d.bb_lower })
+          sl.bb_upper.update({ time: t, value: d.bb_upper })
+          sl.bb_middle.update({ time: t, value: d.bb_middle })
+          sl.bb_lower.update({ time: t, value: d.bb_lower })
         }
         if (paneId === '1h' && sl.resistance && san(d.resistance) !== undefined) {
-          sl.resistance.update({ time: d.time, value: d.resistance })
-          sl.support.update({ time: d.time, value: d.support })
+          sl.resistance.update({ time: t, value: d.resistance })
+          sl.support.update({ time: t, value: d.support })
         }
         if (paneId === '15m' && sl.rsi && san(d.rsi) !== undefined) {
-          sl.rsi.update({ time: d.time, value: d.rsi })
+          sl.rsi.update({ time: t, value: d.rsi })
         }
         return
       }
@@ -276,12 +282,13 @@ export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3e
         const sl = seriesRef.current
         const d  = msg.data
         if (!sl.macd_histogram || !d || san(d.macd_histogram) === undefined) return
+        const t = normTime(d.time)
         sl.macd_histogram.update({
-          time: d.time, value: d.macd_histogram,
+          time: t, value: d.macd_histogram,
           color: d.macd_histogram >= 0 ? 'rgba(16,185,129,0.7)' : 'rgba(244,63,94,0.7)'
         })
-        if (san(d.macd_line)   !== undefined) sl.macd_line.update({ time: d.time, value: d.macd_line })
-        if (san(d.signal_line) !== undefined) sl.signal_line.update({ time: d.time, value: d.signal_line })
+        if (san(d.macd_line)   !== undefined) sl.macd_line.update({ time: t, value: d.macd_line })
+        if (san(d.signal_line) !== undefined) sl.signal_line.update({ time: t, value: d.signal_line })
       }
     })
 
