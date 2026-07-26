@@ -574,3 +574,20 @@ async def sync_exchange_positions(symbols: list[str]) -> dict:
         await exchange.close()
 
     return positions_map
+
+
+async def fetch_orderbook_safe(symbol: str):
+    """Fetches orderbook bids, asks, and spread from Binance/Kraken multi-exchange engine safely."""
+    try:
+        ex = OceanHubExchange()
+        bybit_id = ccxt_symbol_format(symbol)
+        ob_raw = await ex.fetch_order_book(bybit_id, limit=10)
+        bids = [[float(b[0]), float(b[1])] for b in ob_raw.get('bids', [])]
+        asks = [[float(a[0]), float(a[1])] for a in ob_raw.get('asks', [])]
+        spread = 0.0
+        if asks and bids:
+            spread = max(0.0, asks[0][0] - bids[0][0])
+        return {"bids": bids, "asks": asks, "spread": spread}
+    except Exception as e:
+        log.warning("fetch_orderbook_safe failed for %s: %s", symbol, e)
+        return None

@@ -1089,6 +1089,12 @@ async def handle_client(websocket) -> None:
                                 "symbol": sym,
                                 "data": seeded_data
                             })
+                            if sym in LAST_ORDERBOOKS and LAST_ORDERBOOKS[sym]:
+                                await send_ws_msg(websocket, {
+                                    "type": "ORDERBOOK",
+                                    "symbol": sym,
+                                    "data": LAST_ORDERBOOKS[sym]
+                                })
                             log.info(
                                 "[WS] Sent INIT_CHART_HISTORY for get_history request: %s (from cache)", sym)
                         else:
@@ -1121,6 +1127,12 @@ async def handle_client(websocket) -> None:
                                     "symbol": sym,
                                     "data": seeded_data
                                 })
+                                if sym in LAST_ORDERBOOKS and LAST_ORDERBOOKS[sym]:
+                                    await send_ws_msg(websocket, {
+                                        "type": "ORDERBOOK",
+                                        "symbol": sym,
+                                        "data": LAST_ORDERBOOKS[sym]
+                                    })
                                 log.info(
                                     "[WS] Pushed cache candles for switch to %s", sym)
                             else:
@@ -1365,6 +1377,14 @@ async def run_analysis_cycle(symbol: str) -> None:
         if current_price <= 0.0:
             log.error("OHLCV fetch failed for %s: %s", symbol, exc)
             return
+    try:
+        from tools import fetch_orderbook_safe
+        ob_fresh = await fetch_orderbook_safe(symbol)
+        if ob_fresh:
+            LAST_ORDERBOOKS[symbol] = ob_fresh
+            await broadcast({"type": "ORDERBOOK", "symbol": symbol, "data": ob_fresh})
+    except Exception as ob_err:
+        log.warning(f"Orderbook fetch failed for {symbol}: {ob_err}")
 
     # 1. Fetch spread, depth and funding rate metrics FIRST so we can use them
     # in pre-calculated MarketData
