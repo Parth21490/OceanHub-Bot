@@ -887,11 +887,7 @@ class RiskEngine:
         ))
 
         # 3. Allocated Margin ($40.00 Base Margin * (0.25 + 0.75 * scale_factor))
-        target_base = 40.0 * (0.25 + 0.75 * scale_factor)
-        if is_scalp:
-            allocated_margin = target_base * 0.5
-        else:
-            allocated_margin = target_base
+        allocated_margin = 40.0 * (0.25 + 0.75 * scale_factor)
 
         allocated_margin = min(allocated_margin, max(0.0001, free_balance))
         size_usd = allocated_margin * dynamic_leverage
@@ -1391,7 +1387,7 @@ class ExecutionPipeline:
         signal_dir = None
         market_regime = regime
 
-        # 1. Trend Aligned Setups (Lowered to 60% for earlier entries)
+        # 1. Trend Aligned Setups (Keep at 60% for early trend entries)
         if market_regime in ["TRENDING_DOWN", "BEARISH_PULLBACK"] and p_down >= 0.60:
             setup_type = "TREND_ALIGNED_SHORT"
             signal_dir = "SHORT"
@@ -1401,13 +1397,13 @@ class ExecutionPipeline:
             signal_dir = "LONG"
             confidence = p_up
             
-        # 2. Contrarian / Counter-Trend Setups (Requires 68%+ ML Confidence to filter false reversals)
-        elif market_regime in ["TRENDING_DOWN", "BEARISH_PULLBACK"] and p_up >= 0.68:
-            setup_type = "CONTRARIAN_LONG"
+        # 2. Counter-Trend Setups (STRICT 75% GATE - Do not fight trends weakly)
+        elif market_regime in ["TRENDING_DOWN", "BEARISH_PULLBACK"] and p_up >= 0.75:
+            setup_type = "COUNTER_TREND_SCALP_LONG"
             signal_dir = "LONG"
             confidence = p_up
-        elif market_regime in ["TRENDING_UP", "BULLISH_PULLBACK"] and p_down >= 0.68:
-            setup_type = "CONTRARIAN_SHORT"
+        elif market_regime in ["TRENDING_UP", "BULLISH_PULLBACK"] and p_down >= 0.75:
+            setup_type = "COUNTER_TREND_SCALP_SHORT"
             signal_dir = "SHORT"
             confidence = p_down
         elif p_up >= 0.60 and p_up >= p_down and p_up >= p_range:

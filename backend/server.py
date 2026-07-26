@@ -1664,8 +1664,8 @@ async def run_analysis_cycle(symbol: str) -> None:
 
     # Extract decision parameters
     d = decision.get("decision", "HOLD")
-    # Kelly Survival Cap: Hardcode max leverage multiplier of 5x
-    leverage = min(5, decision.get("leverage", 1))
+    # Dynamic Leverage unlocked from ML RiskEngine
+    leverage = decision.get("leverage", 1)
     stop_loss = decision.get("stop_loss")
     take_profit = decision.get("take_profit")
     confidence = decision.get("confidence", 0.0)
