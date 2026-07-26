@@ -4,14 +4,17 @@ import { ChartPane } from './components/ChartPane'
 import { MasterAICore } from './components/MasterAICore'
 import HomeDashboard from './components/HomeDashboard'
 
-// Determine WebSocket URL based on environment
-const getWebSocketUrl = () => {
+// Determine WebSocket URL statically based on environment
+const WS_URL = (() => {
   if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     return `${protocol}//${window.location.host}/ws`
   }
-  return 'ws://127.0.0.1:8080/ws'
-}
+  const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1'
+  return `ws://${host}:8080/ws`
+})()
+
+const getWebSocketUrl = () => WS_URL
 
 const CHART_PANES = [
   { id: '1d', title: '1D Timeframe', subtitle: 'Macro Trend (200 EMA / ADX)', type: 'candlestick', accent: '#f59e0b' },
@@ -90,7 +93,7 @@ function getInitialAsset(validSymbols) {
 export default function App() {
   // Synchronously initialize state prior to first render to prevent flickering
   const [activeAsset, setActiveAsset] = useState(() => getInitialAsset(SYMBOLS))
-  const ws = useWebSocket(getWebSocketUrl())
+  const ws = useWebSocket(WS_URL)
   const { dot, label, pulse } = STATUS_STYLES[ws.status] || STATUS_STYLES.disconnected
 
   // Dynamic asset search state
@@ -285,7 +288,7 @@ export default function App() {
             }}
           />
           <span className="text-[9px] font-mono text-white/35 tracking-widest">
-            {getWebSocketUrl()}
+            {WS_URL}
           </span>
           <span
             className="text-[9px] font-mono font-bold tracking-widest px-1.5 py-0.5 rounded border"
