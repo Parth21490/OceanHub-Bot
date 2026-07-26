@@ -1005,6 +1005,51 @@ async def send_ws_msg(ws, message: dict) -> None:
         await ws.send(payload)
 
 
+def enrich_candles(raw_candles, timeframe):
+    """Enriches raw OHLCV candles with technical indicators for charting."""
+    if not raw_candles:
+        return []
+    import pandas as pd
+    df = pd.DataFrame(raw_candles, columns=["time", "open", "high", "low", "close", "volume"])
+    df["time"] = df["time"].apply(lambda t: int(t // 1000) if t > 10000000000 else int(t))
+    closes = df["close"].astype(float)
+    highs = df["high"].astype(float)
+    lows = df["low"].astype(float)
+    
+    if timeframe == "1d":
+        df["ema200"] = closes.ewm(span=min(200, len(closes)), adjust=False).mean()
+        df["adx"] = 25.0
+    
+    if timeframe == "4h":
+        sma = closes.rolling(20, min_periods=1).mean()
+        std = closes.rolling(20, min_periods=1).std().fillna(0.0)
+        df["bb_upper"] = sma + (std * 2)
+        df["bb_middle"] = sma
+        df["bb_lower"] = sma - (std * 2)
+        
+    if timeframe == "1h":
+        df["resistance"] = highs.rolling(20, min_periods=1).max()
+        df["support"] = lows.rolling(20, min_periods=1).min()
+        
+    if timeframe == "15m":
+        delta = closes.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14, min_periods=1).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14, min_periods=1).mean()
+        rs = gain / (loss + 1e-9)
+        df["rsi"] = 100 - (100 / (1 + rs))
+        
+    if timeframe in ["3m", "macd"]:
+        ema12 = closes.ewm(span=12, adjust=False).mean()
+        ema26 = closes.ewm(span=26, adjust=False).mean()
+        macd = ema12 - ema26
+        signal = macd.ewm(span=9, adjust=False).mean()
+        df["macd_line"] = macd
+        df["signal_line"] = signal
+        df["macd_histogram"] = macd - signal
+
+    return df.to_dict(orient="records")
+
+
 # ── WebSocket connection handler ────────────────────────────────────────
 
 async def handle_client(websocket) -> None:
@@ -1162,78 +1207,59 @@ async def handle_client(websocket) -> None:
 
                 async def handle_dynamic_asset_search(sym=raw_symbol):
                     try:
-                        # 1. Exchange ticker validation
-                        from tools import _bybit_exchange, ccxt_symbol_format, MARKET_CACHE
-                        bybit_id = ccxt_symbol_format(sym)
-                        exchange = _bybit_exchange()
-                        
-                        ticker = None
-                        if MARKET_CACHE and sym in MARKET_CACHE:
-                            ticker = MARKET_CACHE[sym]
-                        else:
+                        from tools import OceanHubExchange, fetch_orderbook_safe
+                        ex = OceanHubExchange()
+
+                        # 1. Multi-timeframe fetch & indicator enrichment
+                        seeded_data = {}
+                        df_1h = None
+                        for tf in ["1d", "4h", "1h", "15m", "3m", "1m"]:
                             try:
-                                ticker = await exchange.fetch_ticker(bybit_id)
-                            except Exception as ex_err:
-                                log.warning(f"[DynamicAsset] Ticker validation failed for {sym}: {ex_err}")
-                        
-                        if not ticker:
+                                raw = await ex.fetch_ohlcv(sym, timeframe=tf, limit=200)
+                                if raw:
+                                    enriched = enrich_candles(raw, tf)
+                                    seeded_data[tf] = enriched
+                                    if tf == "1h":
+                                        df_1h = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close", "volume"])
+                            except Exception as tf_err:
+                                log.warning(f"[DynamicAsset] OHLCV fetch failed for {sym} {tf}: {tf_err}")
+
+                        if not seeded_data:
                             await send_ws_msg(websocket, {
                                 "type": "DYNAMIC_ASSET_ERROR",
                                 "symbol": sym,
-                                "error": f"Asset '{sym}' not found on exchange."
+                                "error": f"Failed to fetch market data for '{sym}'."
                             })
                             return
 
-                        # 2. Fetch recent OHLCV history for dynamic analysis
-                        try:
-                            bybit_tf = "60"
-                            ohlcv_raw = await exchange.fetch_ohlcv(bybit_id, timeframe=bybit_tf, limit=300)
-                            if not ohlcv_raw:
-                                raise ValueError(f"No OHLCV candles returned for {sym}")
+                        if sym not in HISTORY_CACHE:
+                            HISTORY_CACHE[sym] = {}
+                        HISTORY_CACHE[sym].update(seeded_data)
 
-                            df = pd.DataFrame(ohlcv_raw, columns=["time", "open", "high", "low", "close", "volume"])
+                        if sym not in LATEST_OHLCV_CACHE:
+                            LATEST_OHLCV_CACHE[sym] = {}
+                        LATEST_OHLCV_CACHE[sym].update(seeded_data)
 
-                            formatted_candles = [
-                                {
-                                    "time": int(row[0] // 1000) if row[0] > 10000000000 else int(row[0]),
-                                    "open": float(row[1]),
-                                    "high": float(row[2]),
-                                    "low": float(row[3]),
-                                    "close": float(row[4]),
-                                    "volume": float(row[5])
-                                }
-                                for row in ohlcv_raw
-                            ]
+                        # Send full multi-timeframe chart history to client
+                        await send_ws_msg(websocket, {
+                            "type": "INIT_CHART_HISTORY",
+                            "symbol": sym,
+                            "data": seeded_data
+                        })
 
-                            if sym not in HISTORY_CACHE:
-                                HISTORY_CACHE[sym] = {}
-                            HISTORY_CACHE[sym]["1h"] = formatted_candles
-
-                            if sym not in LATEST_OHLCV_CACHE:
-                                LATEST_OHLCV_CACHE[sym] = {}
-                            LATEST_OHLCV_CACHE[sym]["1h"] = formatted_candles
-
-                        except Exception as fetch_err:
-                            log.error(f"[DynamicAsset] OHLCV fetch failed for {sym}: {fetch_err}")
+                        # 2. Fetch & send Order Book
+                        ob_fresh = await fetch_orderbook_safe(sym)
+                        if ob_fresh:
+                            LAST_ORDERBOOKS[sym] = ob_fresh
                             await send_ws_msg(websocket, {
-                                "type": "DYNAMIC_ASSET_ERROR",
+                                "type": "ORDERBOOK",
                                 "symbol": sym,
-                                "error": f"Failed to fetch market data for '{sym}': {str(fetch_err)}"
+                                "data": ob_fresh
                             })
-                            return
 
                         # 3. Run Temporary Agent Analysis
-                        dyn_orderbook = None
-                        try:
-                            ob_raw = await exchange.fetch_order_book(bybit_id, limit=20)
-                            bids = [[float(b[0]), float(b[1])] for b in ob_raw.get('bids', [])]
-                            asks = [[float(a[0]), float(a[1])] for a in ob_raw.get('asks', [])]
-                            dyn_orderbook = {"bids": bids, "asks": asks}
-                        except Exception as ob_err:
-                            log.warning(f"[DynamicAsset] Orderbook fetch failed for {sym}: {ob_err}")
-
                         from master_agent import run_temporary_agent_analysis
-                        result = await run_temporary_agent_analysis(sym, recent_ohlcv_df=df, orderbook=dyn_orderbook)
+                        result = await run_temporary_agent_analysis(sym, recent_ohlcv_df=df_1h, orderbook=ob_fresh)
 
                         # Send result back to requesting client
                         await send_ws_msg(websocket, {
