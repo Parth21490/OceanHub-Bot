@@ -813,7 +813,7 @@ class RiskEngine:
     Design principles:
         - Asset-agnostic: uses ATR% (not raw ATR) for volatility penalty
         - Confidence-aware: scales size with ML conviction, capped at 1.25×
-        - Survival-first: hard caps at 25% account risk and 5× leverage
+        - Survival-first: hard caps at 25% account risk; leverage fully dynamic via calculate_dynamic_leverage()
         - Triple Barrier: SL = 1.5× ATR, TP = 3.0× ATR (2:1 R:R)
     """
     
@@ -832,7 +832,7 @@ class RiskEngine:
     CONFIDENCE_THRESHOLD = 0.60
     MAX_CONFIDENCE_SCALAR = 1.25
 
-    def __init__(self, max_risk_pct: float = 0.25, max_leverage: float = 5.0):
+    def __init__(self, max_risk_pct: float = 0.25, max_leverage: float = 50.0):
         self.max_risk_pct = max_risk_pct
         self.max_leverage = max_leverage
 
@@ -887,7 +887,11 @@ class RiskEngine:
         ))
 
         # 3. Allocated Margin ($40.00 Base Margin * (0.25 + 0.75 * scale_factor))
-        allocated_margin = 40.0 * (0.25 + 0.75 * scale_factor)
+        target_base = 40.0 * (0.25 + 0.75 * scale_factor)
+        if is_scalp:
+            allocated_margin = target_base * 0.5
+        else:
+            allocated_margin = target_base
 
         allocated_margin = min(allocated_margin, max(0.0001, free_balance))
         size_usd = allocated_margin * dynamic_leverage
@@ -1387,7 +1391,7 @@ class ExecutionPipeline:
         signal_dir = None
         market_regime = regime
 
-        # 1. Trend Aligned Setups (Keep at 60% for early trend entries)
+        # 1. Trend Aligned Setups (Lowered to 60% for earlier entries)
         if market_regime in ["TRENDING_DOWN", "BEARISH_PULLBACK"] and p_down >= 0.60:
             setup_type = "TREND_ALIGNED_SHORT"
             signal_dir = "SHORT"
@@ -1397,7 +1401,7 @@ class ExecutionPipeline:
             signal_dir = "LONG"
             confidence = p_up
             
-        # 2. Counter-Trend Setups (STRICT 75% GATE - Do not fight trends weakly)
+        # 2. Contrarian / Counter-Trend Setups (STRICT 75% GATE - Do not fight trends weakly)
         elif market_regime in ["TRENDING_DOWN", "BEARISH_PULLBACK"] and p_up >= 0.75:
             setup_type = "COUNTER_TREND_SCALP_LONG"
             signal_dir = "LONG"
