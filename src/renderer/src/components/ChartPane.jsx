@@ -96,6 +96,9 @@ function normTime(t) {
   return t
 }
 
+// ── Per-pane display limits so bars are always visible (not sub-pixel) ────────
+const PANE_LIMIT = { '1d': 60, '4h': 60, '1h': 72, '15m': 96, '3m': 100, '1m': 120, 'macd': 100 }
+
 // ── ChartPane ─────────────────────────────────────────────────────────────────
 export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3ee', activeAsset, ws }) {
   const containerRef = useRef(null)
@@ -116,7 +119,13 @@ export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3e
     const chart = createChart(containerRef.current, {
       ...DARK_CHART_OPTIONS,
       width:  containerRef.current.clientWidth,
-      height: containerRef.current.clientHeight
+      height: containerRef.current.clientHeight,
+      timeScale: {
+        ...DARK_CHART_OPTIONS.timeScale,
+        barSpacing: 6,
+        rightOffset: 5,
+        minBarSpacing: 0.5,
+      }
     })
     chartRef.current = chart
     const sl = {}
@@ -181,32 +190,37 @@ export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3e
     const chart = chartRef.current
     if (!sl.main || !chart) return
 
+    // Trim to per-pane display limit so bars are always wide enough to see
+    const limit = PANE_LIMIT[paneId] || 100
+    const h = history.length > limit ? history.slice(-limit) : history
+
     // Clear stale data before seeding new symbol
     Object.values(sl).forEach(s => { try { s.setData([]) } catch (_) {} })
 
     if (type === 'candlestick') {
-      sl.main.setData(history
+      sl.main.setData(h
         .filter(d => san(d.open) !== undefined)
         .map(d => ({ time: normTime(d.time), open: d.open, high: d.high, low: d.low, close: d.close }))
       )
       if (paneId === '1d' && sl.ema200) {
-        sl.ema200.setData(history.filter(d => san(d.ema200) !== undefined).map(d => ({ time: normTime(d.time), value: d.ema200 })))
-        const last = history[history.length - 1]
+        sl.ema200.setData(h.filter(d => san(d.ema200) !== undefined).map(d => ({ time: normTime(d.time), value: d.ema200 })))
+        const last = h[h.length - 1]
         if (last?.adx != null) setAdxValue(last.adx)
       }
       if (paneId === '4h' && sl.bb_upper) {
-        sl.bb_upper.setData( history.filter(d => san(d.bb_upper)  !== undefined).map(d => ({ time: normTime(d.time), value: d.bb_upper })))
-        sl.bb_middle.setData(history.filter(d => san(d.bb_middle) !== undefined).map(d => ({ time: normTime(d.time), value: d.bb_middle })))
-        sl.bb_lower.setData( history.filter(d => san(d.bb_lower)  !== undefined).map(d => ({ time: normTime(d.time), value: d.bb_lower })))
+        sl.bb_upper.setData( h.filter(d => san(d.bb_upper)  !== undefined).map(d => ({ time: normTime(d.time), value: d.bb_upper })))
+        sl.bb_middle.setData(h.filter(d => san(d.bb_middle) !== undefined).map(d => ({ time: normTime(d.time), value: d.bb_middle })))
+        sl.bb_lower.setData( h.filter(d => san(d.bb_lower)  !== undefined).map(d => ({ time: normTime(d.time), value: d.bb_lower })))
       }
       if (paneId === '1h' && sl.resistance) {
-        sl.resistance.setData(history.filter(d => san(d.resistance) !== undefined).map(d => ({ time: normTime(d.time), value: d.resistance })))
-        sl.support.setData(   history.filter(d => san(d.support)    !== undefined).map(d => ({ time: normTime(d.time), value: d.support })))
+        sl.resistance.setData(h.filter(d => san(d.resistance) !== undefined).map(d => ({ time: normTime(d.time), value: d.resistance })))
+        sl.support.setData(   h.filter(d => san(d.support)    !== undefined).map(d => ({ time: normTime(d.time), value: d.support })))
       }
       if (paneId === '15m' && sl.rsi) {
-        sl.rsi.setData(history.filter(d => san(d.rsi) !== undefined).map(d => ({ time: normTime(d.time), value: d.rsi })))
+        sl.rsi.setData(h.filter(d => san(d.rsi) !== undefined).map(d => ({ time: normTime(d.time), value: d.rsi })))
       }
     } else if (type === 'macd' && sl.macd_histogram) {
+      // Run EMA over full history for accurate MACD, then display only last N
       let ema12 = 0, ema26 = 0, signal = 0
       const k12 = 2 / 13, k26 = 2 / 27, kSig = 2 / 10
       const macdData = history.map((d, i) => {
@@ -223,23 +237,16 @@ export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3e
         const hist = d.macd_histogram != null ? d.macd_histogram : (macdLine - signalLine)
         return { time: normTime(d.time), macd_histogram: hist, macd_line: macdLine, signal_line: signalLine }
       })
-
-      sl.macd_histogram.setData(macdData.map(d => ({
+      // Only display the last N points for readability
+      const macdDisplay = macdData.slice(-limit)
+      sl.macd_histogram.setData(macdDisplay.map(d => ({
         time: d.time, value: d.macd_histogram,
         color: d.macd_histogram >= 0 ? 'rgba(16,185,129,0.7)' : 'rgba(244,63,94,0.7)'
       })))
-      sl.macd_line.setData(macdData.map(d => ({ time: d.time, value: d.macd_line })))
-      sl.signal_line.setData(macdData.map(d => ({ time: d.time, value: d.signal_line })))
+      sl.macd_line.setData(macdDisplay.map(d => ({ time: d.time, value: d.macd_line })))
+      sl.signal_line.setData(macdDisplay.map(d => ({ time: d.time, value: d.signal_line })))
     }
-    // Zoom to last ~100 candles so they render as visible bars, not a diagonal line
     chart.timeScale().fitContent()
-    if (history.length > 100) {
-      try {
-        const last   = normTime(history[history.length - 1].time)
-        const first  = normTime(history[history.length - 100].time)
-        chart.timeScale().setVisibleRange({ from: first, to: last })
-      } catch (_) {}
-    }
   }, [type, paneId])
 
   const subscribe = ws?.subscribe
