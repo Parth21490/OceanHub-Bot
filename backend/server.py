@@ -1058,39 +1058,20 @@ async def handle_client(websocket) -> None:
     except Exception as history_err:
         log.error("Failed to seed initial log history: %s", history_err)
 
-    # ── Seed charts immediately on new connection from in-memory cache ──────
-    async def seed_connection_history():
-        symbol = CURRENT_SYMBOL
-        try:
-            cached = LATEST_OHLCV_CACHE.get(
-                symbol) or HISTORY_CACHE.get(symbol, {})
-            if cached:
-                seeded_data = {k: v for k, v in cached.items() if v}
-                await send_ws_msg(websocket, {
-                    "type": "INIT_CHART_HISTORY",
-                    "symbol": symbol,
-                    "data": seeded_data
-                })
-                log.info(
-                    "[WS] Sent INIT_CHART_HISTORY to new client for %s (from cache)",
-                    symbol)
-            else:
-                log.info("[WS] Cache empty for %s on connection", symbol)
-        except Exception as e:
-            log.error("Failed to seed history on new connection: %s", e)
-    asyncio.create_task(seed_connection_history())
-
     try:
         async for raw in websocket:
             try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
+                payload = raw.data if hasattr(raw, "data") else raw
+                if not payload or not isinstance(payload, (str, bytes, bytearray)):
+                    continue
+                msg = json.loads(payload)
+            except (json.JSONDecodeError, TypeError):
                 continue
 
             msg_type = msg.get("type")
 
             if msg_type == "ping":
-                await websocket.send(safe_json({"type": "pong"}))
+                await send_ws_msg(websocket, {"type": "pong"})
 
             elif msg_type == "get_history":
                 symbol = msg.get("symbol", CURRENT_SYMBOL)
@@ -1103,11 +1084,11 @@ async def handle_client(websocket) -> None:
                         if cached:
                             seeded_data = {
                                 k: v for k, v in cached.items() if v}
-                            await websocket.send(safe_json({
+                            await send_ws_msg(websocket, {
                                 "type": "INIT_CHART_HISTORY",
                                 "symbol": sym,
                                 "data": seeded_data
-                            }))
+                            })
                             log.info(
                                 "[WS] Sent INIT_CHART_HISTORY for get_history request: %s (from cache)", sym)
                         else:
@@ -1135,11 +1116,11 @@ async def handle_client(websocket) -> None:
                             if cached:
                                 seeded_data = {
                                     k: v for k, v in cached.items() if v}
-                                await websocket.send(safe_json({
+                                await send_ws_msg(websocket, {
                                     "type": "INIT_CHART_HISTORY",
                                     "symbol": sym,
                                     "data": seeded_data
-                                }))
+                                })
                                 log.info(
                                     "[WS] Pushed cache candles for switch to %s", sym)
                             else:
@@ -1153,10 +1134,10 @@ async def handle_client(websocket) -> None:
             elif msg_type == "DYNAMIC_ASSET_SEARCH":
                 raw_symbol = str(msg.get("symbol", "")).strip().upper()
                 if not raw_symbol:
-                    await websocket.send(safe_json({
+                    await send_ws_msg(websocket, {
                         "type": "DYNAMIC_ASSET_ERROR",
                         "error": "Symbol cannot be empty."
-                    }))
+                    })
                     continue
 
                 if "/" not in raw_symbol:
@@ -1184,11 +1165,11 @@ async def handle_client(websocket) -> None:
                                 log.warning(f"[DynamicAsset] Ticker validation failed for {sym}: {ex_err}")
                         
                         if not ticker:
-                            await websocket.send(safe_json({
+                            await send_ws_msg(websocket, {
                                 "type": "DYNAMIC_ASSET_ERROR",
                                 "symbol": sym,
                                 "error": f"Asset '{sym}' not found on exchange."
-                            }))
+                            })
                             return
 
                         # 2. Fetch recent OHLCV history for dynamic analysis
@@ -1222,11 +1203,11 @@ async def handle_client(websocket) -> None:
 
                         except Exception as fetch_err:
                             log.error(f"[DynamicAsset] OHLCV fetch failed for {sym}: {fetch_err}")
-                            await websocket.send(safe_json({
+                            await send_ws_msg(websocket, {
                                 "type": "DYNAMIC_ASSET_ERROR",
                                 "symbol": sym,
                                 "error": f"Failed to fetch market data for '{sym}': {str(fetch_err)}"
-                            }))
+                            })
                             return
 
                         # 3. Run Temporary Agent Analysis
@@ -1243,20 +1224,20 @@ async def handle_client(websocket) -> None:
                         result = await run_temporary_agent_analysis(sym, recent_ohlcv_df=df, orderbook=dyn_orderbook)
 
                         # Send result back to requesting client
-                        await websocket.send(safe_json({
+                        await send_ws_msg(websocket, {
                             "type": "DYNAMIC_ASSET_RESULT",
                             "data": result
-                        }))
+                        })
                         log.info(f"[DynamicAsset] Successfully evaluated temporary agent for {sym}: Decision={result.get('decision')}")
 
                     except Exception as dyn_err:
-                        log.error(f"[DynamicAsset] Execution error for {sym}: {dyn_err}")
-                        await websocket.send(safe_json({
+                        log.error(f"[DynamicAsset] Failed to evaluate dynamic asset {sym}: {dyn_err}")
+                        await send_ws_msg(websocket, {
                             "type": "DYNAMIC_ASSET_ERROR",
                             "symbol": sym,
-                            "error": f"Dynamic asset analysis failed: {str(dyn_err)}"
-                        }))
-
+                            "error": f"Evaluation error for '{sym}': {str(dyn_err)}"
+                        })
+                
                 asyncio.create_task(handle_dynamic_asset_search())
 
             elif msg_type == "execute":
