@@ -1241,7 +1241,7 @@ class ExecutionPipeline:
             curr_dist = abs(data.price - entry_price)
             is_in_favor = (direction == "LONG" and data.price > entry_price) or (direction == "SHORT" and data.price < entry_price)
             
-            if is_in_favor and tp_dist > 0 and (curr_dist / tp_dist) >= 0.80:
+            if is_in_favor and tp_dist > 0 and (curr_dist / tp_dist) >= 0.40:
                 if direction == "LONG":
                     be_sl = round_price_prec(entry_price * (1.0 + FEES_PCT), data.asset)
                     if updated_sl is None or be_sl > updated_sl:
@@ -1401,12 +1401,12 @@ class ExecutionPipeline:
             signal_dir = "LONG"
             confidence = p_up
             
-        # 2. Contrarian Setups 
-        elif market_regime in ["TRENDING_DOWN", "BEARISH_PULLBACK"] and p_up >= 0.60:
+        # 2. Contrarian / Counter-Trend Setups (Requires 68%+ ML Confidence to filter false reversals)
+        elif market_regime in ["TRENDING_DOWN", "BEARISH_PULLBACK"] and p_up >= 0.68:
             setup_type = "CONTRARIAN_LONG"
             signal_dir = "LONG"
             confidence = p_up
-        elif market_regime in ["TRENDING_UP", "BULLISH_PULLBACK"] and p_down >= 0.60:
+        elif market_regime in ["TRENDING_UP", "BULLISH_PULLBACK"] and p_down >= 0.68:
             setup_type = "CONTRARIAN_SHORT"
             signal_dir = "SHORT"
             confidence = p_down

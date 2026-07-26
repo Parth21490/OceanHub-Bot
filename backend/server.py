@@ -38,7 +38,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 WS_HOST = "0.0.0.0"
 WS_PORT = int(os.environ.get("PORT") or "8000")
 TIMEFRAME = os.getenv("TIMEFRAME", "1h")
-CANDLE_LIMIT = int(os.getenv("CANDLE_LIMIT", "200"))
+CANDLE_LIMIT = int(os.getenv("CANDLE_LIMIT", "500"))
 CYCLE_INTERVAL = int(os.getenv("CYCLE_INTERVAL", "60"))
 
 # ── Logging ─────────────────────────────────────────────────────────────
