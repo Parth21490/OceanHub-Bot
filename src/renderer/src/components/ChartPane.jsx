@@ -39,7 +39,7 @@ const DARK_CHART_OPTIONS = {
 function OrderBookView({ data }) {
   const bids = data?.bids?.slice(0, 5) || []
   const asks = data?.asks?.slice(0, 5) || []
-  const spread = data?.spread || 0.0
+  const spread = data?.spread || (asks.length && bids.length ? Math.max(0, asks[0][0] - bids[0][0]) : 0.0)
 
   return (
     <div className="flex-1 min-h-0 p-3 flex flex-col justify-between font-mono text-[10px] select-none text-white/70 bg-[#0a0d14]/40 h-full">
@@ -48,28 +48,36 @@ function OrderBookView({ data }) {
           <span>Price (USDT)</span>
           <span>Size</span>
         </div>
-        {[...asks].reverse().map(([price, size], i) => (
-          <div key={i} className="flex justify-between relative py-0.5">
-            <span className="text-rose-500 font-bold z-10">{price.toLocaleString(undefined, { minimumFractionDigits: 1 })}</span>
-            <span className="text-white/60 z-10">{size.toFixed(4)}</span>
-            <div className="absolute right-0 top-0 bottom-0 bg-rose-500/10 transition-all duration-300" style={{ width: `${Math.min(100, size * 20)}%` }} />
-          </div>
-        ))}
+        {asks.length > 0 ? (
+          [...asks].reverse().map(([price, size], i) => (
+            <div key={i} className="flex justify-between relative py-0.5">
+              <span className="text-rose-500 font-bold z-10">{price.toLocaleString(undefined, { minimumFractionDigits: 1 })}</span>
+              <span className="text-white/60 z-10">{size.toFixed(4)}</span>
+              <div className="absolute right-0 top-0 bottom-0 bg-rose-500/10 transition-all duration-300" style={{ width: `${Math.min(100, size * 20)}%` }} />
+            </div>
+          ))
+        ) : (
+          <div className="text-white/30 text-[9px] py-1 text-center font-mono animate-pulse">Streaming Asks...</div>
+        )}
       </div>
 
       <div className="py-1.5 my-1.5 border-y border-white/5 flex justify-between items-center text-[9px]">
         <span className="text-white/30 uppercase tracking-widest text-[8px]">Spread</span>
-        <span className="text-cyan-400 font-bold font-mono">{spread.toFixed(1)} USDT</span>
+        <span className="text-cyan-400 font-bold font-mono">{spread.toFixed(2)} USDT</span>
       </div>
 
       <div className="flex flex-col gap-0.5">
-        {bids.map(([price, size], i) => (
-          <div key={i} className="flex justify-between relative py-0.5">
-            <span className="text-emerald-500 font-bold z-10">{price.toLocaleString(undefined, { minimumFractionDigits: 1 })}</span>
-            <span className="text-white/60 z-10">{size.toFixed(4)}</span>
-            <div className="absolute right-0 top-0 bottom-0 bg-emerald-500/10 transition-all duration-300" style={{ width: `${Math.min(100, size * 20)}%` }} />
-          </div>
-        ))}
+        {bids.length > 0 ? (
+          bids.map(([price, size], i) => (
+            <div key={i} className="flex justify-between relative py-0.5">
+              <span className="text-emerald-500 font-bold z-10">{price.toLocaleString(undefined, { minimumFractionDigits: 1 })}</span>
+              <span className="text-white/60 z-10">{size.toFixed(4)}</span>
+              <div className="absolute right-0 top-0 bottom-0 bg-emerald-500/10 transition-all duration-300" style={{ width: `${Math.min(100, size * 20)}%` }} />
+            </div>
+          ))
+        ) : (
+          <div className="text-white/30 text-[9px] py-1 text-center font-mono animate-pulse">Streaming Bids...</div>
+        )}
       </div>
     </div>
   )
@@ -193,15 +201,29 @@ export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3e
         sl.rsi.setData(history.filter(d => san(d.rsi) !== undefined).map(d => ({ time: d.time, value: d.rsi })))
       }
     } else if (type === 'macd' && sl.macd_histogram) {
-      sl.macd_histogram.setData(history
-        .filter(d => san(d.macd_histogram) !== undefined)
-        .map(d => ({
-          time: d.time, value: d.macd_histogram,
-          color: d.macd_histogram >= 0 ? 'rgba(16,185,129,0.7)' : 'rgba(244,63,94,0.7)'
-        }))
-      )
-      sl.macd_line.setData(  history.filter(d => san(d.macd_line)   !== undefined).map(d => ({ time: d.time, value: d.macd_line })))
-      sl.signal_line.setData(history.filter(d => san(d.signal_line) !== undefined).map(d => ({ time: d.time, value: d.signal_line })))
+      let ema12 = 0, ema26 = 0, signal = 0
+      const k12 = 2 / 13, k26 = 2 / 27, kSig = 2 / 10
+      const macdData = history.map((d, i) => {
+        const close = d.close || d.value || 0
+        if (i === 0) { ema12 = close; ema26 = close }
+        else {
+          ema12 = close * k12 + ema12 * (1 - k12)
+          ema26 = close * k26 + ema26 * (1 - k26)
+        }
+        const macdLine = d.macd_line != null ? d.macd_line : (ema12 - ema26)
+        if (i === 0) signal = macdLine
+        else signal = macdLine * kSig + signal * (1 - kSig)
+        const signalLine = d.signal_line != null ? d.signal_line : signal
+        const hist = d.macd_histogram != null ? d.macd_histogram : (macdLine - signalLine)
+        return { time: d.time, macd_histogram: hist, macd_line: macdLine, signal_line: signalLine }
+      })
+
+      sl.macd_histogram.setData(macdData.map(d => ({
+        time: d.time, value: d.macd_histogram,
+        color: d.macd_histogram >= 0 ? 'rgba(16,185,129,0.7)' : 'rgba(244,63,94,0.7)'
+      })))
+      sl.macd_line.setData(macdData.map(d => ({ time: d.time, value: d.macd_line })))
+      sl.signal_line.setData(macdData.map(d => ({ time: d.time, value: d.signal_line })))
     }
     chart.timeScale().fitContent()
   }, [type, paneId])
@@ -214,9 +236,10 @@ export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3e
       const sym = activeRef.current
 
       // ── Historical seed ────────────────────────────────────────────────────
-      if (msg.type === 'INIT_CHART_HISTORY' && msg.symbol === sym && msg.data?.[paneId]) {
-        console.log(`[ChartPane ${paneId}] INIT_CHART_HISTORY for ${sym} — ${msg.data[paneId].length} candles`)
-        applyHistory(msg.data[paneId])
+      const targetHistory = msg.data?.[paneId] || (paneId === 'macd' ? (msg.data?.['3m'] || msg.data?.['15m'] || msg.data?.['1h']) : null)
+      if (msg.type === 'INIT_CHART_HISTORY' && msg.symbol === sym && targetHistory) {
+        console.log(`[ChartPane ${paneId}] INIT_CHART_HISTORY for ${sym} — ${targetHistory.length} candles`)
+        applyHistory(targetHistory)
         return
       }
 
