@@ -97,7 +97,9 @@ function normTime(t) {
 }
 
 // ── Per-pane display limits so bars are always visible (not sub-pixel) ────────
-const PANE_LIMIT = { '1d': 60, '4h': 60, '1h': 72, '15m': 96, '3m': 100, '1m': 120, 'macd': 100 }
+// NOTE: scrollToRealTime() preserves barSpacing, fitContent() squashes it.
+//       Keep limits low so even on small screens bars are >=8px wide.
+const PANE_LIMIT = { '1d': 30, '4h': 42, '1h': 48, '15m': 64, '3m': 60, '1m': 60, 'macd': 60 }
 
 // ── ChartPane ─────────────────────────────────────────────────────────────────
 export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3ee', activeAsset, ws }) {
@@ -122,9 +124,9 @@ export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3e
       height: containerRef.current.clientHeight,
       timeScale: {
         ...DARK_CHART_OPTIONS.timeScale,
-        barSpacing: 6,
-        rightOffset: 5,
-        minBarSpacing: 0.5,
+        barSpacing:    8,   // each bar = 8px wide — clear candlestick bodies
+        rightOffset:   5,   // a few bars of padding on the right
+        minBarSpacing: 1,   // never compress below 1px
       }
     })
     chartRef.current = chart
@@ -246,7 +248,11 @@ export function ChartPane({ paneId, title, subtitle, type, accentColor = '#22d3e
       sl.macd_line.setData(macdDisplay.map(d => ({ time: d.time, value: d.macd_line })))
       sl.signal_line.setData(macdDisplay.map(d => ({ time: d.time, value: d.signal_line })))
     }
-    chart.timeScale().fitContent()
+    // scrollToRealTime keeps our barSpacing setting and shows the newest candle on the right.
+    // fitContent() would override barSpacing and compress all bars into a diagonal line.
+    try { chart.timeScale().scrollToRealTime() } catch (_) {
+      chart.timeScale().fitContent()
+    }
   }, [type, paneId])
 
   const subscribe = ws?.subscribe
