@@ -37,7 +37,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
 # 0.0.0.0 for Docker/Railway; override with 127.0.0.1 for local-only
 WS_HOST = os.getenv("WS_HOST", "0.0.0.0")
-WS_PORT = int(os.getenv("PORT", os.getenv("WS_PORT", "8000")))
+WS_PORT = int(os.environ.get("PORT") or "8000")
 TIMEFRAME = os.getenv("TIMEFRAME", "1h")
 CANDLE_LIMIT = int(os.getenv("CANDLE_LIMIT", "200"))
 CYCLE_INTERVAL = int(os.getenv("CYCLE_INTERVAL", "60"))

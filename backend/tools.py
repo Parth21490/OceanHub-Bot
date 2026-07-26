@@ -199,30 +199,33 @@ def _bybit_exchange():
             import ccxt
             import logging
             logger = logging.getLogger("oceanhub")
-            wait_time = 2.0
-            for attempt in range(4):
-                try:
-                    return await orig_method(symbol, *args_list, **kwargs)
-                except Exception as exc:
-                    if "403" in str(exc) or "CloudFront" in str(exc):
-                        ex.urls["api"]["public"] = "https://api.bytick.com"
-                        ex.urls["api"]["private"] = "https://api.bytick.com"
-                    if attempt == 3:
-                        logger.warning(
-                            "[WARNING] Max retries reached for %s on %s. Skipping: %s",
-                            method_name,
-                            symbol,
-                            exc)
-                        raise exc
-                    logger.warning(
-                        "[WARNING] %s failed for %s (attempt %d/4). Retrying in %.1fs... Error: %s",
-                        method_name,
-                        symbol,
-                        attempt + 1,
-                        wait_time,
-                        exc)
-                    await asyncio.sleep(wait_time)
-                    wait_time *= 2.0
+
+            try:
+                return await orig_method(symbol, *args_list, **kwargs)
+            except Exception as exc:
+                err_str = str(exc)
+                if "403" in err_str or "CloudFront" in err_str or "Forbidden" in err_str:
+                    logger.warning("[Exchange Failover] Bybit returned 403 Forbidden on %s %s. Failing over to Binance/Kraken...", method_name, symbol)
+                    for fallback_name in ['binance', 'kraken']:
+                        try:
+                            fallback_ex_class = getattr(ccxt_async, fallback_name)
+                            fallback_ex = fallback_ex_class({'enableRateLimit': True, 'timeout': 8000})
+                            try:
+                                clean_sym = symbol if '/' in symbol else (symbol[:-4] + '/USDT' if symbol.endswith('USDT') else symbol)
+                                if method_name == 'fetch_ohlcv':
+                                    tf = args_list[0] if len(args_list) > 0 else kwargs.get('timeframe', '1h')
+                                    lim = args_list[2] if len(args_list) > 2 else kwargs.get('limit', 200)
+                                    return await fallback_ex.fetch_ohlcv(clean_sym, timeframe=tf, limit=lim)
+                                elif method_name == 'fetch_ticker':
+                                    return await fallback_ex.fetch_ticker(clean_sym)
+                                elif method_name == 'fetch_order_book':
+                                    lim = args_list[0] if len(args_list) > 0 else kwargs.get('limit', 50)
+                                    return await fallback_ex.fetch_order_book(clean_sym, limit=lim)
+                            finally:
+                                await fallback_ex.close()
+                        except Exception as f_err:
+                            logger.debug("[Exchange Failover] %s fallback failed for %s: %s", fallback_name, symbol, f_err)
+                raise exc
         setattr(ex, method_name, wrapped)
 
     for method in [
