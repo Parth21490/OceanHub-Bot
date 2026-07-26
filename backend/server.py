@@ -35,10 +35,11 @@ except ImportError:
 # ── Config ──────────────────────────────────────────────────────────────
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
-WS_HOST = "0.0.0.0"
-WS_PORT = int(os.environ.get("PORT") or "8000")
+# 0.0.0.0 for Docker/Railway; override with 127.0.0.1 for local-only
+WS_HOST = os.getenv("WS_HOST", "0.0.0.0")
+WS_PORT = int(os.getenv("PORT", os.getenv("WS_PORT", "8080")))
 TIMEFRAME = os.getenv("TIMEFRAME", "1h")
-CANDLE_LIMIT = int(os.getenv("CANDLE_LIMIT", "500"))
+CANDLE_LIMIT = int(os.getenv("CANDLE_LIMIT", "200"))
 CYCLE_INTERVAL = int(os.getenv("CYCLE_INTERVAL", "60"))
 
 # ── Logging ─────────────────────────────────────────────────────────────
@@ -609,17 +610,10 @@ async def broadcast(message: dict) -> None:
     if not CLIENTS:
         return
     payload = safe_json(message)
-    dead = set()
-    for client in list(CLIENTS):
-        try:
-            if hasattr(client, "send_str"):
-                await client.send_str(payload)
-            elif hasattr(client, "send"):
-                await client.send(payload)
-        except Exception:
-            dead.add(client)
-    for c in dead:
-        CLIENTS.discard(c)
+    await asyncio.gather(
+        *[client.send(payload) for client in CLIENTS],
+        return_exceptions=True,
+    )
 
 
 LOG_FILE_PATH = "/app/logs/master_core.log"
@@ -911,167 +905,28 @@ async def update_sub_agent_ui(
         log.debug("Background sub-agents UI update for %s: %s", symbol, exc)
 
 
-# ── Static File Server Setup ───────────────────────────────────────────
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "dist")
-if not os.path.exists(STATIC_DIR):
-    STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "out", "renderer")
-
-async def http_process_request(connection, request=None):
-    req = request if request is not None else getattr(connection, "request", None)
-
-    # Extract headers defensively from request or connection
-    raw_headers = {}
-    if req and hasattr(req, "headers"):
-        raw_headers = req.headers
-    elif hasattr(connection, "request_headers"):
-        raw_headers = connection.request_headers
-
-    header_map = {}
-    try:
-        for k, v in raw_headers.items():
-            header_map[k.lower()] = str(v)
-    except Exception:
-        pass
-
-    # Detect WebSocket Handshake (Upgrade header, Sec-WebSocket-Key, or /ws path)
-    upgrade_val = header_map.get("upgrade", "").lower()
-    connection_val = header_map.get("connection", "").lower()
-    has_sec_key = bool(header_map.get("sec-websocket-key", ""))
-    req_path = getattr(req, "path", "/") if req else getattr(connection, "path", "/")
-
-    if req_path.startswith("/ws") or upgrade_val == "websocket" or "upgrade" in connection_val or has_sec_key:
-        # Return None so websockets library performs 101 Switching Protocols
-        return None
-
-    # Handle health check
-    if req_path == "/health":
-        body = json.dumps({"status": "healthy", "service": "OceanHub Bot"}).encode("utf-8")
-        return (200, [("Content-Type", "application/json"), ("Content-Length", str(len(body)))], body)
-
-    # Static File Server for SPA
-    clean_path = req_path.lstrip("/").split("?")[0]
-    file_path = os.path.join(STATIC_DIR, clean_path)
-
-    if clean_path and os.path.exists(file_path) and os.path.isfile(file_path):
-        mime_type = "application/octet-stream"
-        if file_path.endswith(".html"):
-            mime_type = "text/html; charset=utf-8"
-        elif file_path.endswith(".js"):
-            mime_type = "application/javascript; charset=utf-8"
-        elif file_path.endswith(".css"):
-            mime_type = "text/css; charset=utf-8"
-        elif file_path.endswith(".svg"):
-            mime_type = "image/svg+xml"
-        elif file_path.endswith(".png"):
-            mime_type = "image/png"
-        elif file_path.endswith(".ico"):
-            mime_type = "image/x-icon"
-
-        try:
-            with open(file_path, "rb") as f:
-                content = f.read()
-            return (200, [
-                ("Content-Type", mime_type),
-                ("Cache-Control", "public, max-age=31536000, immutable" if not file_path.endswith('.html') else "no-cache"),
-                ("Content-Length", str(len(content)))
-            ], content)
-        except Exception as exc:
-            log.error("Failed serving static asset %s: %s", clean_path, exc)
-
-    # Fallback to SPA index.html with Cache-Control: no-cache to prevent stale browser caching
-    index_path = os.path.join(STATIC_DIR, "index.html")
-    if os.path.exists(index_path) and os.path.isfile(index_path):
-        try:
-            with open(index_path, "rb") as f:
-                content = f.read()
-            return (200, [
-                ("Content-Type", "text/html; charset=utf-8"),
-                ("Cache-Control", "no-cache, no-store, must-revalidate"),
-                ("Pragma", "no-cache"),
-                ("Expires", "0"),
-                ("Content-Length", str(len(content)))
-            ], content)
-        except Exception as exc:
-            log.error("Failed serving index.html: %s", exc)
-
-    return (404, [("Content-Type", "text/plain")], b"Not Found")
-
-
-async def send_ws_msg(ws, message: dict) -> None:
-    payload = safe_json(message)
-    if hasattr(ws, "send_str"):
-        await ws.send_str(payload)
-    elif hasattr(ws, "send"):
-        await ws.send(payload)
-
-
-def enrich_candles(raw_candles, timeframe):
-    """Enriches raw OHLCV candles with technical indicators for charting."""
-    if not raw_candles:
-        return []
-    import pandas as pd
-    df = pd.DataFrame(raw_candles, columns=["time", "open", "high", "low", "close", "volume"])
-    df["time"] = df["time"].apply(lambda t: int(t // 1000) if t > 10000000000 else int(t))
-    closes = df["close"].astype(float)
-    highs = df["high"].astype(float)
-    lows = df["low"].astype(float)
-    
-    if timeframe == "1d":
-        df["ema200"] = closes.ewm(span=min(200, len(closes)), adjust=False).mean()
-        df["adx"] = 25.0
-    
-    if timeframe == "4h":
-        sma = closes.rolling(20, min_periods=1).mean()
-        std = closes.rolling(20, min_periods=1).std().fillna(0.0)
-        df["bb_upper"] = sma + (std * 2)
-        df["bb_middle"] = sma
-        df["bb_lower"] = sma - (std * 2)
-        
-    if timeframe == "1h":
-        df["resistance"] = highs.rolling(20, min_periods=1).max()
-        df["support"] = lows.rolling(20, min_periods=1).min()
-        
-    if timeframe == "15m":
-        delta = closes.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14, min_periods=1).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14, min_periods=1).mean()
-        rs = gain / (loss + 1e-9)
-        df["rsi"] = 100 - (100 / (1 + rs))
-        
-    if timeframe in ["3m", "macd"]:
-        ema12 = closes.ewm(span=12, adjust=False).mean()
-        ema26 = closes.ewm(span=26, adjust=False).mean()
-        macd = ema12 - ema26
-        signal = macd.ewm(span=9, adjust=False).mean()
-        df["macd_line"] = macd
-        df["signal_line"] = signal
-        df["macd_histogram"] = macd - signal
-
-    return df.to_dict(orient="records")
-
-
 # ── WebSocket connection handler ────────────────────────────────────────
 
-async def handle_client(websocket) -> None:
+async def handle_client(websocket: websockets.WebSocketServerProtocol) -> None:
     global EXECUTE_MODE
 
     CLIENTS.add(websocket)
-    client_addr = getattr(websocket, "remote_address", "Client")
+    client_addr = websocket.remote_address
     log.info("Client connected: %s  (total: %d)", client_addr, len(CLIENTS))
 
     # Send welcome status
-    await send_ws_msg(websocket, {
+    await websocket.send(safe_json({
         "type": "status",
         "text": f"OceanHub multi-asset backend connected. Symbols: {SYMBOLS}",
-    })
+    }))
 
     # Push initial unified state
     try:
         state = await get_unified_state()
-        await send_ws_msg(websocket, {
+        await websocket.send(safe_json({
             "type": "unified_state",
             "data": state
-        })
+        }))
     except Exception as state_err:
         log.error("Failed to send initial unified state: %s", state_err)
 
@@ -1093,30 +948,50 @@ async def handle_client(websocket) -> None:
                             history.append(entry["text"])
                     except Exception:
                         pass
-            await send_ws_msg(websocket, {
+            await websocket.send(safe_json({
                 "type": "INIT_LOG_HISTORY",
                 "data": history
-            })
+            }))
             log.info(
                 "[WS] Sent INIT_LOG_HISTORY (%d entries) to new client",
                 len(history))
     except Exception as history_err:
         log.error("Failed to seed initial log history: %s", history_err)
 
+    # ── Seed charts immediately on new connection from in-memory cache ──────
+    async def seed_connection_history():
+        symbol = CURRENT_SYMBOL
+        try:
+            cached = LATEST_OHLCV_CACHE.get(
+                symbol) or HISTORY_CACHE.get(symbol, {})
+            if cached:
+                seeded_data = {k: v for k, v in cached.items() if v}
+                await websocket.send(safe_json({
+                    "type": "INIT_CHART_HISTORY",
+                    "symbol": symbol,
+                    "data": seeded_data
+                }))
+                log.info(
+                    "[WS] Sent INIT_CHART_HISTORY to new client for %s (from cache)",
+                    symbol)
+            else:
+                log.info("[WS] Cache empty for %s on connection", symbol)
+        except Exception as e:
+            log.error("Failed to seed history on new connection: %s", e)
+    asyncio.create_task(seed_connection_history())
+
     try:
         async for raw in websocket:
             try:
                 payload = raw.data if hasattr(raw, "data") else raw
-                if not payload or not isinstance(payload, (str, bytes, bytearray)):
-                    continue
                 msg = json.loads(payload)
-            except (json.JSONDecodeError, TypeError):
+            except Exception:
                 continue
 
             msg_type = msg.get("type")
 
             if msg_type == "ping":
-                await send_ws_msg(websocket, {"type": "pong"})
+                await websocket.send(safe_json({"type": "pong"}))
 
             elif msg_type == "get_history":
                 symbol = msg.get("symbol", CURRENT_SYMBOL)
@@ -1129,17 +1004,11 @@ async def handle_client(websocket) -> None:
                         if cached:
                             seeded_data = {
                                 k: v for k, v in cached.items() if v}
-                            await send_ws_msg(websocket, {
+                            await websocket.send(safe_json({
                                 "type": "INIT_CHART_HISTORY",
                                 "symbol": sym,
                                 "data": seeded_data
-                            })
-                            if sym in LAST_ORDERBOOKS and LAST_ORDERBOOKS[sym]:
-                                await send_ws_msg(websocket, {
-                                    "type": "ORDERBOOK",
-                                    "symbol": sym,
-                                    "data": LAST_ORDERBOOKS[sym]
-                                })
+                            }))
                             log.info(
                                 "[WS] Sent INIT_CHART_HISTORY for get_history request: %s (from cache)", sym)
                         else:
@@ -1167,17 +1036,11 @@ async def handle_client(websocket) -> None:
                             if cached:
                                 seeded_data = {
                                     k: v for k, v in cached.items() if v}
-                                await send_ws_msg(websocket, {
+                                await websocket.send(safe_json({
                                     "type": "INIT_CHART_HISTORY",
                                     "symbol": sym,
                                     "data": seeded_data
-                                })
-                                if sym in LAST_ORDERBOOKS and LAST_ORDERBOOKS[sym]:
-                                    await send_ws_msg(websocket, {
-                                        "type": "ORDERBOOK",
-                                        "symbol": sym,
-                                        "data": LAST_ORDERBOOKS[sym]
-                                    })
+                                }))
                                 log.info(
                                     "[WS] Pushed cache candles for switch to %s", sym)
                             else:
@@ -1191,10 +1054,10 @@ async def handle_client(websocket) -> None:
             elif msg_type == "DYNAMIC_ASSET_SEARCH":
                 raw_symbol = str(msg.get("symbol", "")).strip().upper()
                 if not raw_symbol:
-                    await send_ws_msg(websocket, {
+                    await websocket.send(safe_json({
                         "type": "DYNAMIC_ASSET_ERROR",
                         "error": "Symbol cannot be empty."
-                    })
+                    }))
                     continue
 
                 if "/" not in raw_symbol:
@@ -1207,75 +1070,94 @@ async def handle_client(websocket) -> None:
 
                 async def handle_dynamic_asset_search(sym=raw_symbol):
                     try:
-                        from tools import OceanHubExchange, fetch_orderbook_safe
-                        ex = OceanHubExchange()
-
-                        # 1. Multi-timeframe fetch & indicator enrichment
-                        seeded_data = {}
-                        df_1h = None
-                        for tf in ["1d", "4h", "1h", "15m", "3m", "1m"]:
+                        # 1. Exchange ticker validation
+                        from tools import _bybit_exchange, ccxt_symbol_format, MARKET_CACHE
+                        bybit_id = ccxt_symbol_format(sym)
+                        exchange = _bybit_exchange()
+                        
+                        ticker = None
+                        if MARKET_CACHE and sym in MARKET_CACHE:
+                            ticker = MARKET_CACHE[sym]
+                        else:
                             try:
-                                raw = await ex.fetch_ohlcv(sym, timeframe=tf, limit=200)
-                                if raw:
-                                    enriched = enrich_candles(raw, tf)
-                                    seeded_data[tf] = enriched
-                                    if tf == "1h":
-                                        df_1h = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close", "volume"])
-                            except Exception as tf_err:
-                                log.warning(f"[DynamicAsset] OHLCV fetch failed for {sym} {tf}: {tf_err}")
-
-                        if not seeded_data:
-                            await send_ws_msg(websocket, {
+                                ticker = await exchange.fetch_ticker(bybit_id)
+                            except Exception as ex_err:
+                                log.warning(f"[DynamicAsset] Ticker validation failed for {sym}: {ex_err}")
+                        
+                        if not ticker:
+                            await websocket.send(safe_json({
                                 "type": "DYNAMIC_ASSET_ERROR",
                                 "symbol": sym,
-                                "error": f"Failed to fetch market data for '{sym}'."
-                            })
+                                "error": f"Asset '{sym}' not found on exchange."
+                            }))
                             return
 
-                        if sym not in HISTORY_CACHE:
-                            HISTORY_CACHE[sym] = {}
-                        HISTORY_CACHE[sym].update(seeded_data)
+                        # 2. Fetch recent OHLCV history for dynamic analysis
+                        try:
+                            bybit_tf = "60"
+                            ohlcv_raw = await exchange.fetch_ohlcv(bybit_id, timeframe=bybit_tf, limit=300)
+                            if not ohlcv_raw:
+                                raise ValueError(f"No OHLCV candles returned for {sym}")
 
-                        if sym not in LATEST_OHLCV_CACHE:
-                            LATEST_OHLCV_CACHE[sym] = {}
-                        LATEST_OHLCV_CACHE[sym].update(seeded_data)
+                            df = pd.DataFrame(ohlcv_raw, columns=["time", "open", "high", "low", "close", "volume"])
 
-                        # Send full multi-timeframe chart history to client
-                        await send_ws_msg(websocket, {
-                            "type": "INIT_CHART_HISTORY",
-                            "symbol": sym,
-                            "data": seeded_data
-                        })
+                            formatted_candles = [
+                                {
+                                    "time": int(row[0]),
+                                    "open": float(row[1]),
+                                    "high": float(row[2]),
+                                    "low": float(row[3]),
+                                    "close": float(row[4]),
+                                    "volume": float(row[5])
+                                }
+                                for row in ohlcv_raw
+                            ]
 
-                        # 2. Fetch & send Order Book
-                        ob_fresh = await fetch_orderbook_safe(sym)
-                        if ob_fresh:
-                            LAST_ORDERBOOKS[sym] = ob_fresh
-                            await send_ws_msg(websocket, {
-                                "type": "ORDERBOOK",
+                            if sym not in HISTORY_CACHE:
+                                HISTORY_CACHE[sym] = {}
+                            HISTORY_CACHE[sym]["1h"] = formatted_candles
+
+                            if sym not in LATEST_OHLCV_CACHE:
+                                LATEST_OHLCV_CACHE[sym] = {}
+                            LATEST_OHLCV_CACHE[sym]["1h"] = formatted_candles
+
+                        except Exception as fetch_err:
+                            log.error(f"[DynamicAsset] OHLCV fetch failed for {sym}: {fetch_err}")
+                            await websocket.send(safe_json({
+                                "type": "DYNAMIC_ASSET_ERROR",
                                 "symbol": sym,
-                                "data": ob_fresh
-                            })
+                                "error": f"Failed to fetch market data for '{sym}': {str(fetch_err)}"
+                            }))
+                            return
 
                         # 3. Run Temporary Agent Analysis
+                        dyn_orderbook = None
+                        try:
+                            ob_raw = await exchange.fetch_order_book(bybit_id, limit=20)
+                            bids = [[float(b[0]), float(b[1])] for b in ob_raw.get('bids', [])]
+                            asks = [[float(a[0]), float(a[1])] for a in ob_raw.get('asks', [])]
+                            dyn_orderbook = {"bids": bids, "asks": asks}
+                        except Exception as ob_err:
+                            log.warning(f"[DynamicAsset] Orderbook fetch failed for {sym}: {ob_err}")
+
                         from master_agent import run_temporary_agent_analysis
-                        result = await run_temporary_agent_analysis(sym, recent_ohlcv_df=df_1h, orderbook=ob_fresh)
+                        result = await run_temporary_agent_analysis(sym, recent_ohlcv_df=df, orderbook=dyn_orderbook)
 
                         # Send result back to requesting client
-                        await send_ws_msg(websocket, {
+                        await websocket.send(safe_json({
                             "type": "DYNAMIC_ASSET_RESULT",
                             "data": result
-                        })
+                        }))
                         log.info(f"[DynamicAsset] Successfully evaluated temporary agent for {sym}: Decision={result.get('decision')}")
 
                     except Exception as dyn_err:
-                        log.error(f"[DynamicAsset] Failed to evaluate dynamic asset {sym}: {dyn_err}")
-                        await send_ws_msg(websocket, {
+                        log.error(f"[DynamicAsset] Execution error for {sym}: {dyn_err}")
+                        await websocket.send(safe_json({
                             "type": "DYNAMIC_ASSET_ERROR",
                             "symbol": sym,
-                            "error": f"Evaluation error for '{sym}': {str(dyn_err)}"
-                        })
-                
+                            "error": f"Dynamic asset analysis failed: {str(dyn_err)}"
+                        }))
+
                 asyncio.create_task(handle_dynamic_asset_search())
 
             elif msg_type == "execute":
@@ -1403,14 +1285,6 @@ async def run_analysis_cycle(symbol: str) -> None:
         if current_price <= 0.0:
             log.error("OHLCV fetch failed for %s: %s", symbol, exc)
             return
-    try:
-        from tools import fetch_orderbook_safe
-        ob_fresh = await fetch_orderbook_safe(symbol)
-        if ob_fresh:
-            LAST_ORDERBOOKS[symbol] = ob_fresh
-            await broadcast({"type": "ORDERBOOK", "symbol": symbol, "data": ob_fresh})
-    except Exception as ob_err:
-        log.warning(f"Orderbook fetch failed for {symbol}: {ob_err}")
 
     # 1. Fetch spread, depth and funding rate metrics FIRST so we can use them
     # in pre-calculated MarketData
@@ -1691,8 +1565,8 @@ async def run_analysis_cycle(symbol: str) -> None:
 
     # Extract decision parameters
     d = decision.get("decision", "HOLD")
-    # Dynamic Leverage unlocked from ML RiskEngine
-    leverage = decision.get("leverage", 1)
+    # Kelly Survival Cap: Hardcode max leverage multiplier of 5x
+    leverage = min(5, decision.get("leverage", 1))
     stop_loss = decision.get("stop_loss")
     take_profit = decision.get("take_profit")
     confidence = decision.get("confidence", 0.0)
@@ -2454,41 +2328,30 @@ async def start_symbol_tasks(symbol: str):
 
 
 async def handle_root(request):
-    index_path = os.path.join(STATIC_DIR, "index.html")
-    if os.path.exists(index_path) and os.path.isfile(index_path):
-        try:
-            with open(index_path, "rb") as f:
-                content = f.read()
-            return web.Response(body=content, content_type='text/html', status=200)
-        except Exception as exc:
-            log.error("Failed serving index.html in handle_root: %s", exc)
-
-    html_content = """<!DOCTYPE html><html><body><h2>OceanHub Engine Active</h2></body></html>"""
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>OceanHub AI Trading Terminal</title>
+        <meta http-equiv="refresh" content="2;url=http://localhost:3000" />
+        <style>
+            body { background: #0a0d14; color: #fff; font-family: monospace; text-align: center; padding-top: 15vh; }
+            a { color: #22d3ee; text-decoration: none; font-weight: bold; }
+            .card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); display: inline-block; padding: 30px; border-radius: 12px; }
+            .btn { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #0891b2; color: white; border-radius: 8px; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h2>◈ OceanHub Backend Server Active</h2>
+            <p>You are accessing the <b>Backend API Port (8000)</b>.</p>
+            <p>Redirecting you to the <b>Trading Dashboard UI</b> at <a href="http://localhost:3000">http://localhost:3000</a>...</p>
+            <a href="http://localhost:3000" class="btn">Open Trading Dashboard (Port 3000) ➔</a>
+        </div>
+    </body>
+    </html>
+    """
     return web.Response(text=html_content, content_type='text/html', status=200)
-
-
-async def handle_static_assets(request):
-    req_path = request.path.lstrip('/').split('?')[0]
-    file_path = os.path.join(STATIC_DIR, req_path)
-    if req_path and os.path.exists(file_path) and os.path.isfile(file_path):
-        mime_type = "application/octet-stream"
-        if file_path.endswith('.html'):
-            mime_type = "text/html"
-        elif file_path.endswith('.js'):
-            mime_type = "application/javascript"
-        elif file_path.endswith('.css'):
-            mime_type = "text/css"
-        elif file_path.endswith('.svg'):
-            mime_type = "image/svg+xml"
-        elif file_path.endswith('.png'):
-            mime_type = "image/png"
-        try:
-            with open(file_path, "rb") as f:
-                content = f.read()
-            return web.Response(body=content, content_type=mime_type, status=200)
-        except Exception:
-            pass
-    return await handle_root(request)
 
 
 async def handle_health(request):
@@ -2507,11 +2370,15 @@ async def handle_health(request):
     return web.Response(text=status_msg, status=200)
 
 
-async def aiohttp_ws_handler(request):
-    ws = web.WebSocketResponse(heartbeat=30.0)
-    await ws.prepare(request)
-    await handle_client(ws)
-    return ws
+async def start_health_server():
+    app = web.Application()
+    app.router.add_get('/', handle_root)
+    app.router.add_get('/health', handle_health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8000)
+    await site.start()
+    log.info("HTTP Health Check server started on port 8000")
 
 
 async def perform_shutdown(sig=None):
@@ -2567,18 +2434,30 @@ async def main() -> None:
              "ACTIVE" if DRY_RUN_MODE else "INACTIVE")
     log.info("  Order execution logic is simulated / read-only.")
     log.info("================================================")
-    log.info("Unified Server → http://%s:%d (WebSocket /ws)", WS_HOST, WS_PORT)
+    log.info("WebSocket server → ws://%s:%d", WS_HOST, WS_PORT)
     log.info("Symbols: %s | Timeframe: %s | Cycle: %ds",
              SYMBOLS, TIMEFRAME, CYCLE_INTERVAL)
 
+    # Fetch instrument list exactly once during startup (Initialising neural
+    # substrate)
     try:
-        from tools import DEFAULT_MARKETS
+        from tools import _bybit_exchange
         import tools
-        tools.MARKET_CACHE = DEFAULT_MARKETS
-        log.info("[System] Initialising neural substrate: Pre-seeded %d linear perpetual markets.", len(tools.MARKET_CACHE))
+        log.info(
+            "[System] Initialising neural substrate: Loading instrument metadata...")
+        temp_ex = _bybit_exchange()
+        # Fetch markets from Bybit Testnet/Mainnet
+        tools.MARKET_CACHE = await temp_ex.load_markets()
+        await temp_ex.close()
+        log.info(
+            "Successfully cached %d linear perpetual markets at startup.", len(
+                tools.MARKET_CACHE))
     except Exception as cache_err:
-        log.error("Failed to populate global MARKET_CACHE: %s", cache_err)
+        log.error(
+            "Failed to populate global MARKET_CACHE at startup: %s",
+            cache_err)
 
+    # State Recovery Protocol: On-Startup Exchange Sync
     try:
         from tools import sync_exchange_positions
         synced_positions = await sync_exchange_positions(SYMBOLS)
@@ -2591,10 +2470,17 @@ async def main() -> None:
     except Exception as sync_err:
         log.warning("State recovery exchange sync warning: %s", sync_err)
 
+    # Register OS signal handlers for graceful shutdown (SIGTERM/SIGINT)
     register_signal_handlers()
 
+    # Start HTTP Health check server on port 8000
+    asyncio.create_task(start_health_server())
+
+    # Start global position guardian — monitors ALL active trades for SL/TP/liquidation
+    # regardless of which symbol is currently being streamed by the frontend.
     asyncio.create_task(global_position_guardian())
 
+    # Initialise ML Brain (load from disk or train fresh) for all assets
     async def _init_ml():
         try:
             from ml_brain import initialize_brain
@@ -2613,51 +2499,35 @@ async def main() -> None:
             log.warning("ML Brain init failed: %s", exc)
             await stream_thought(f"[ML Brain] Init failed: {exc}")
 
-    # Start Unified Production Server (aiohttp) immediately so port is listening
-    app = web.Application()
-    app.router.add_get('/ws', aiohttp_ws_handler)
-    app.router.add_get('/health', handle_health)
-    app.router.add_get('/', handle_root)
-
-    assets_dir = os.path.join(STATIC_DIR, "assets")
-    if os.path.exists(assets_dir):
-        app.router.add_static('/assets', assets_dir)
-
-    app.router.add_get('/{tail:.*}', handle_root)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-
-    ports_to_bind = {8000, 8080}
-    if os.getenv("PORT"):
-        try:
-            ports_to_bind.add(int(os.getenv("PORT")))
-        except ValueError:
-            pass
-
-    for p in ports_to_bind:
-        try:
-            site = web.TCPSite(runner, WS_HOST, p)
-            await site.start()
-            log.info("Unified OceanHub Production Server listening on http://%s:%d (WebSocket /ws)", WS_HOST, p)
-        except Exception as e:
-            log.warning("Port %d binding note: %s", p, e)
-
+    # Preload historical data for all assets and timeframes
     await preload_all_history()
+
+    # Start the default active symbol tasks (ADA/USDT)
     await start_symbol_tasks("ADA/USDT")
 
+    # Start ML Brain training in background (after 10s so OHLCV data is seeded
+    # first)
     async def _delayed_ml_init():
         await asyncio.sleep(10)
         await _init_ml()
     asyncio.create_task(_delayed_ml_init())
+    # Start daily report scheduler task
     asyncio.create_task(daily_report_cron())
 
-    try:
-        await asyncio.Event().wait()
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        log.info("Main loop cancelled/interrupted. Initiating shutdown...")
-    finally:
-        await perform_shutdown()
+    async with websockets.serve(
+        handle_client,
+        WS_HOST,
+        WS_PORT,
+        origins=None,
+    ):
+        log.info("WebSocket server listening on ws://%s:%d", WS_HOST, WS_PORT)
+        try:
+            # Keep serving client sockets indefinitely
+            await asyncio.Event().wait()
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            log.info("Main loop cancelled/interrupted. Initiating shutdown...")
+        finally:
+            await perform_shutdown()
 
 
 if __name__ == "__main__":
