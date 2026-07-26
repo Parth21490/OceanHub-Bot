@@ -610,10 +610,17 @@ async def broadcast(message: dict) -> None:
     if not CLIENTS:
         return
     payload = safe_json(message)
-    await asyncio.gather(
-        *[client.send(payload) for client in CLIENTS],
-        return_exceptions=True,
-    )
+    dead = set()
+    for client in list(CLIENTS):
+        try:
+            if hasattr(client, "send_str"):
+                await client.send_str(payload)
+            elif hasattr(client, "send"):
+                await client.send(payload)
+        except Exception:
+            dead.add(client)
+    for c in dead:
+        CLIENTS.discard(c)
 
 
 LOG_FILE_PATH = "/app/logs/master_core.log"
@@ -991,28 +998,36 @@ async def http_process_request(connection, request=None):
     return (404, [("Content-Type", "text/plain")], b"Not Found")
 
 
+async def send_ws_msg(ws, message: dict) -> None:
+    payload = safe_json(message)
+    if hasattr(ws, "send_str"):
+        await ws.send_str(payload)
+    elif hasattr(ws, "send"):
+        await ws.send(payload)
+
+
 # ── WebSocket connection handler ────────────────────────────────────────
 
-async def handle_client(websocket: websockets.WebSocketServerProtocol) -> None:
+async def handle_client(websocket) -> None:
     global EXECUTE_MODE
 
     CLIENTS.add(websocket)
-    client_addr = websocket.remote_address
+    client_addr = getattr(websocket, "remote_address", "Client")
     log.info("Client connected: %s  (total: %d)", client_addr, len(CLIENTS))
 
     # Send welcome status
-    await websocket.send(safe_json({
+    await send_ws_msg(websocket, {
         "type": "status",
         "text": f"OceanHub multi-asset backend connected. Symbols: {SYMBOLS}",
-    }))
+    })
 
     # Push initial unified state
     try:
         state = await get_unified_state()
-        await websocket.send(safe_json({
+        await send_ws_msg(websocket, {
             "type": "unified_state",
             "data": state
-        }))
+        })
     except Exception as state_err:
         log.error("Failed to send initial unified state: %s", state_err)
 
@@ -1034,10 +1049,10 @@ async def handle_client(websocket: websockets.WebSocketServerProtocol) -> None:
                             history.append(entry["text"])
                     except Exception:
                         pass
-            await websocket.send(safe_json({
+            await send_ws_msg(websocket, {
                 "type": "INIT_LOG_HISTORY",
                 "data": history
-            }))
+            })
             log.info(
                 "[WS] Sent INIT_LOG_HISTORY (%d entries) to new client",
                 len(history))
@@ -1052,11 +1067,11 @@ async def handle_client(websocket: websockets.WebSocketServerProtocol) -> None:
                 symbol) or HISTORY_CACHE.get(symbol, {})
             if cached:
                 seeded_data = {k: v for k, v in cached.items() if v}
-                await websocket.send(safe_json({
+                await send_ws_msg(websocket, {
                     "type": "INIT_CHART_HISTORY",
                     "symbol": symbol,
                     "data": seeded_data
-                }))
+                })
                 log.info(
                     "[WS] Sent INIT_CHART_HISTORY to new client for %s (from cache)",
                     symbol)
@@ -2466,21 +2481,11 @@ async def handle_health(request):
     return web.Response(text=status_msg, status=200)
 
 
-async def start_health_server():
-    if WS_PORT == 8000:
-        log.info("HTTP Health & Status page served directly on WS_PORT (8000)")
-        return
-    try:
-        app = web.Application()
-        app.router.add_get('/health', handle_health)
-        app.router.add_get('/{tail:.*}', handle_static_assets)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', 8000)
-        await site.start()
-        log.info("HTTP Health & Static Web Dashboard server started on port 8000")
-    except Exception as exc:
-        log.warning("Secondary health server on port 8000 skipped: %s", exc)
+async def aiohttp_ws_handler(request):
+    ws = web.WebSocketResponse(heartbeat=30.0)
+    await ws.prepare(request)
+    await handle_client(ws)
+    return ws
 
 
 async def perform_shutdown(sig=None):
@@ -2536,19 +2541,16 @@ async def main() -> None:
              "ACTIVE" if DRY_RUN_MODE else "INACTIVE")
     log.info("  Order execution logic is simulated / read-only.")
     log.info("================================================")
-    log.info("WebSocket server → ws://%s:%d", WS_HOST, WS_PORT)
+    log.info("Unified Server → http://%s:%d (WebSocket /ws)", WS_HOST, WS_PORT)
     log.info("Symbols: %s | Timeframe: %s | Cycle: %ds",
              SYMBOLS, TIMEFRAME, CYCLE_INTERVAL)
 
-    # Fetch instrument list exactly once during startup (Initialising neural
-    # substrate)
     try:
         from tools import _bybit_exchange
         import tools
         log.info(
             "[System] Initialising neural substrate: Loading instrument metadata...")
         temp_ex = _bybit_exchange()
-        # Fetch markets from Bybit Testnet/Mainnet
         tools.MARKET_CACHE = await temp_ex.load_markets()
         await temp_ex.close()
         log.info(
@@ -2559,7 +2561,6 @@ async def main() -> None:
             "Failed to populate global MARKET_CACHE at startup: %s",
             cache_err)
 
-    # State Recovery Protocol: On-Startup Exchange Sync
     try:
         from tools import sync_exchange_positions
         synced_positions = await sync_exchange_positions(SYMBOLS)
@@ -2572,17 +2573,10 @@ async def main() -> None:
     except Exception as sync_err:
         log.warning("State recovery exchange sync warning: %s", sync_err)
 
-    # Register OS signal handlers for graceful shutdown (SIGTERM/SIGINT)
     register_signal_handlers()
 
-    # Start HTTP Health check server on port 8000
-    asyncio.create_task(start_health_server())
-
-    # Start global position guardian — monitors ALL active trades for SL/TP/liquidation
-    # regardless of which symbol is currently being streamed by the frontend.
     asyncio.create_task(global_position_guardian())
 
-    # Initialise ML Brain (load from disk or train fresh) for all assets
     async def _init_ml():
         try:
             from ml_brain import initialize_brain
@@ -2601,36 +2595,39 @@ async def main() -> None:
             log.warning("ML Brain init failed: %s", exc)
             await stream_thought(f"[ML Brain] Init failed: {exc}")
 
-    # Preload historical data for all assets and timeframes
-    await preload_all_history()
+    # Start Unified Production Server (aiohttp) immediately so port is listening
+    app = web.Application()
+    app.router.add_get('/ws', aiohttp_ws_handler)
+    app.router.add_get('/health', handle_health)
+    app.router.add_get('/', handle_root)
 
-    # Start the default active symbol tasks (ADA/USDT)
+    assets_dir = os.path.join(STATIC_DIR, "assets")
+    if os.path.exists(assets_dir):
+        app.router.add_static('/assets', assets_dir)
+
+    app.router.add_get('/{tail:.*}', handle_root)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, WS_HOST, WS_PORT)
+    await site.start()
+    log.info("Unified OceanHub Server listening on http://%s:%d (WebSocket endpoint /ws)", WS_HOST, WS_PORT)
+
+    await preload_all_history()
     await start_symbol_tasks("ADA/USDT")
 
-    # Start ML Brain training in background (after 10s so OHLCV data is seeded
-    # first)
     async def _delayed_ml_init():
         await asyncio.sleep(10)
         await _init_ml()
     asyncio.create_task(_delayed_ml_init())
-    # Start daily report scheduler task
     asyncio.create_task(daily_report_cron())
 
-    async with websockets.serve(
-        handle_client,
-        WS_HOST,
-        WS_PORT,
-        origins=None,
-        process_request=http_process_request,
-    ):
-        log.info("WebSocket server listening on ws://%s:%d", WS_HOST, WS_PORT)
-        try:
-            # Keep serving client sockets indefinitely
-            await asyncio.Event().wait()
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            log.info("Main loop cancelled/interrupted. Initiating shutdown...")
-        finally:
-            await perform_shutdown()
+    try:
+        await asyncio.Event().wait()
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        log.info("Main loop cancelled/interrupted. Initiating shutdown...")
+    finally:
+        await perform_shutdown()
 
 
 if __name__ == "__main__":
